@@ -1,4 +1,3 @@
-// /home/pentagon03/alignasm/HCC1954.p.paf -a /home/pentagon03/alignasm/alt.paf
 #include "paf_data.hpp"
 
 #include "csv.hpp"
