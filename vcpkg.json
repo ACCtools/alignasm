@@ -1,0 +1,12 @@
+{
+  "name" : "readasm",
+  "version-string" : "1.0.0",
+  "builtin-baseline" : "a34c873a9717a888f58dc05268dea15592c2f0ff",
+  "dependencies" : [ {
+    "name" : "unordered-dense",
+    "version>=" : "4.4.0"
+  }, {
+    "name" : "tbb",
+    "version>=" : "2021.11.0"
+  } ]
+}
