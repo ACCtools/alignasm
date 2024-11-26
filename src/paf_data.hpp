@@ -70,7 +70,7 @@ struct PafReadData {
 struct PafOutputData {
     int32_t ctg_index;
     int64_t edited_qry_str, edited_qry_end;
-    int32_t edited_qry_str_overlap_idx, edited_qry_end_overlap_idx;
+    int64_t edited_qry_str_overlap_idx, edited_qry_end_overlap_idx;
     int64_t edited_ref_str, edited_ref_end;
 
     PafOutputData()
@@ -79,9 +79,8 @@ struct PafOutputData {
               edited_ref_str(0), edited_ref_end(0) {}
 
     PafOutputData(int32_t ctg_index_, int64_t edited_qry_str_, int64_t edited_qry_end_,
-                  int32_t edited_qry_str_overlap_idx_, int32_t edited_qry_end_overlap_idx_,
-                  int64_t edited_ref_str_, int64_t edited_ref_end_,
-                  int32_t edited_ref_str_overlap_idx_, int32_t edited_ref_end_overlap_idx_)
+                  int64_t edited_qry_str_overlap_idx_, int64_t edited_qry_end_overlap_idx_,
+                  int64_t edited_ref_str_, int64_t edited_ref_end_)
             : ctg_index(ctg_index_), edited_qry_str(edited_qry_str_), edited_qry_end(edited_qry_end_),
               edited_qry_str_overlap_idx(edited_qry_str_overlap_idx_), edited_qry_end_overlap_idx(edited_qry_end_overlap_idx_),
               edited_ref_str(edited_ref_str_), edited_ref_end(edited_ref_end_) {}

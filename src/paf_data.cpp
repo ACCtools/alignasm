@@ -503,7 +503,7 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
     /// Actual SubSequence of Pafs that has good (score, anom)
     kShortestWalksSolver sol(graph, Paf_Distance::max(), Paf_Distance(true), true, false);
     const int64_t MAX_PATH_COUNT = 10000; // Maximum Paths to watch for shorter anom score paths
-    auto k_path_distances = sol.k_shortest_paths(src, dest, MAX_PATH_COUNT);
+    auto k_path_distances = sol.k_shortest_walks(src, dest, MAX_PATH_COUNT);
 
     assert(not k_path_distances.empty());
     auto min_distance = *k_path_distances.begin();
@@ -1145,7 +1145,7 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
     };
 
     /// Find EdgePath 1
-    auto path1 = sol.kth_shortest_full_path(src, dest, 0, false);
+    auto path1 = sol.kth_shortest_walk_recover(src, dest, 0, false);
     auto paf_path1 = edge_path_to_paf_path(path1);
     auto upgraded_paf_path1 = upgrade_paf_path(paf_path1);
 
@@ -1158,7 +1158,7 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
             return lft.score_sum() == rht.score_sum() and lft.anom == rht.anom;
         };
         for(;idx<k_path_distances.size() && is_equal_paf_distance(min_distance, k_path_distances[idx]);idx++){
-            auto path_max = sol.kth_shortest_full_path(src, dest, idx, false);
+            auto path_max = sol.kth_shortest_walk_recover(src, dest, idx, false);
             auto paf_path_max = edge_path_to_paf_path(path_max);
             auto upgraded_paf_path_max = upgrade_paf_path(paf_path_max);
             paf_ctg_max_out.push_back(upgraded_paf_path_max);
@@ -1187,7 +1187,7 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
 
         if(ans_idx != -1) {
 //            std::cout << min_distance.score_sum() << ',' << ans.score_sum() << ',' << paf_ctg_data_original[0].paf_index << '\n';
-            auto path2 = sol.kth_shortest_full_path(src, dest, ans_idx, false);
+            auto path2 = sol.kth_shortest_walk_recover(src, dest, ans_idx, false);
             auto paf_path2 = edge_path_to_paf_path(path2);
             auto upgraded_paf_path2 = upgrade_paf_path(paf_path2);
             paf_ctg_alt_out = upgraded_paf_path2;

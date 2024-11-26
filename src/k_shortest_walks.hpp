@@ -175,7 +175,7 @@ public:
 
     // O(|E| log |V| + |K|)
     // returns vector of distances
-    std::vector<Distance> k_shortest_paths(int64_t source, int64_t sink, int64_t k) {
+    std::vector<Distance> k_shortest_walks(int64_t source, int64_t sink, int64_t k) {
         WeightedGraph g_rev(n);
         for (int64_t u = 0; u < n; ++u)
             for (auto &[v, w] : g[u])
@@ -185,7 +185,7 @@ public:
         else std::tie(d, best) = bellman_ford(g_rev, sink);
 
         if (d[source] == MAX_DISTANCE)
-            return move(std::vector<Distance>{});
+            return std::move(std::vector<Distance>{});
 
         std::vector<std::basic_string<int64_t>> tree(n);
         for (int64_t u = 0; u < n; ++u)
@@ -224,7 +224,7 @@ public:
         prev_node.reserve(3 * k);
 
         if (not h[source])
-            return move(distances);
+            return std::move(distances);
 
         {
             min_heap<std::tuple<Distance, heap_t*, int64_t>> q;
@@ -246,16 +246,16 @@ public:
                 if (ch->right) emplace(cd + ch->right->key - ch->key, ch->right, prev_node[cur]); // same heap, add difference
             }
         }
-        return move(distances);
+        return std::move(distances);
     }
 
     // returns list of edges: {node a, node b, Distance w}
-    std::vector<std::tuple<int64_t, int64_t, Distance>> kth_shortest_full_path(int64_t source, int64_t sink, int64_t k, bool call_k_paths = false) {
+    std::vector<std::tuple<int64_t, int64_t, Distance>> kth_shortest_walk_recover(int64_t source, int64_t sink, int64_t k, bool call_k_paths = false) {
         if (call_k_paths)
-            k_shortest_paths(source, sink, k + 1);
+            k_shortest_walks(source, sink, k + 1);
         std::vector<std::tuple<int64_t, int64_t, Distance>> path{};
         if (k < 0 or k >= path_last_node.size())
-            return path;
+            return std::move(path);
         std::vector<std::tuple<int64_t, int64_t, Distance>> sidetracks{};
         {
             int64_t cur = path_last_node[k];
@@ -285,7 +285,7 @@ public:
                 }
             }
         }
-        return move(path);
+        return std::move(path);
     }
 };
 
