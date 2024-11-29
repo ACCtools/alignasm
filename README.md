@@ -22,7 +22,7 @@ cmake --build build
 alignasm <input.paf>
 ```
 
-When provided with input.paf as input, it generates two serialized outputs: `input.aln.paf`, which contains the aligned data, and `input.aln.alt.paf`, which represents the alternative paths. It is recommended to have more than 1 TB of RAM available for running alignasm.
+When provided with input.paf as input, it generates two serialized outputs: `input.aln.paf`, which contains the aligned data, and `input.aln.alt.paf`, which represents the alternative paths. It is recommended to have more than 512 GB of RAM available for running alignasm.
 
 ## Author
 

@@ -25,8 +25,6 @@ FetchContent_Declare(
         GIT_TAG v2.9
 )
 
-
-
 FetchContent_MakeAvailable(argparse)
 
 FetchContent_MakeAvailable(csv)
@@ -41,7 +39,6 @@ add_executable(alignasm
         src/paf_data.cpp
         src/leftist_heap.hpp
 )
-
 
 target_include_directories(alignasm PRIVATE csv)
 
