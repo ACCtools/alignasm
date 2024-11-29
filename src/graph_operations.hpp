@@ -4,7 +4,7 @@
 
 #ifndef ALIGNASM_GRAPH_OPERATIONS_HPP
 #define ALIGNASM_GRAPH_OPERATIONS_HPP
-#include<vector>
+#include <vector>
 
 template<typename Dist_t>
 using Graph = std::vector<std::vector<std::pair<int64_t, Dist_t>>>; // consider using vector<basic_string<Edge>> for performance boost

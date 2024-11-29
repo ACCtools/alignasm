@@ -1,5 +1,5 @@
-#ifndef ALIGNASM_MAIN_H
-#define ALIGNASM_MAIN_H
+#ifndef ALIGNASM_PAF_DATA_HPP
+#define ALIGNASM_PAF_DATA_HPP
 
 #include <cassert>
 #include <cinttypes>
@@ -74,24 +74,15 @@ struct PafReadData {
 struct PafOutputData {
     int32_t ctg_index;
     int64_t edited_qry_str, edited_qry_end;
-    int64_t edited_qry_str_overlap_idx, edited_qry_end_overlap_idx;
     int64_t edited_ref_str, edited_ref_end;
 
     PafOutputData()
             : ctg_index(-1), edited_qry_str(0), edited_qry_end(0),
-              edited_qry_str_overlap_idx(-1), edited_qry_end_overlap_idx(-1),
               edited_ref_str(0), edited_ref_end(0) {}
 
-    PafOutputData(int32_t ctg_index_, int64_t edited_qry_str_, int64_t edited_qry_end_,
-                  int64_t edited_qry_str_overlap_idx_, int64_t edited_qry_end_overlap_idx_,
-                  int64_t edited_ref_str_, int64_t edited_ref_end_)
-            : ctg_index(ctg_index_), edited_qry_str(edited_qry_str_), edited_qry_end(edited_qry_end_),
-              edited_qry_str_overlap_idx(edited_qry_str_overlap_idx_), edited_qry_end_overlap_idx(edited_qry_end_overlap_idx_),
-              edited_ref_str(edited_ref_str_), edited_ref_end(edited_ref_end_) {}
     explicit PafOutputData(const PafReadData& readData):
             ctg_index(readData.ctg_index),
             edited_qry_str(readData.qry_str), edited_qry_end(readData.qry_end),
-            edited_qry_str_overlap_idx(-1), edited_qry_end_overlap_idx(-1),
             edited_ref_str(readData.ref_str), edited_ref_end(readData.ref_end) {}
 };
 
@@ -173,4 +164,4 @@ PafEditData get_edited_paf_data(PafOutputData &paf_out, PafReadData &paf_read_da
 void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data, std::vector<PafOutputData> &paf_ctg_out, std::vector<PafOutputData> &paf_ctg_alt_out, std::vector<std::vector<PafOutputData>> &paf_ctg_max_out);
 
 
-#endif //ALIGNASM_MAIN_H
+#endif //ALIGNASM_PAF_DATA_HPP

@@ -5,7 +5,6 @@
 #include "k_weighted_bfs.hpp"
 #include "priority_queue_vector.hpp"
 
-#include <iostream>
 #include <charconv>
 #include <limits>
 
@@ -87,29 +86,17 @@ PafEditData get_edited_paf_data(PafOutputData &paf_out, PafReadData &paf_read_da
         return cs_str.substr(st_ind, nd_ind - st_ind);
     };
 
-    bool break_flag;
-    bool st_cut = paf_out.edited_qry_str_overlap_idx != -1;
-    bool nd_cut = paf_out.edited_qry_end_overlap_idx != -1;
+    bool break_flag, cs_add_flag;
+    bool st_cut = paf_out.edited_qry_str != paf_read_data.qry_str;
+    bool nd_cut = paf_out.edited_qry_str != paf_read_data.qry_end;
     paf_edit_data.is_cut = st_cut or nd_cut;
 
     int64_t equal_len;
     int64_t converted_num = -1;
     int32_t range_index = -1;
-    int32_t st_index, nd_index;
-
-    if (st_cut) {
-        st_index = paf_out.edited_qry_str_overlap_idx;
-    } else {
-        st_index = -1;
-    }
-
-    if (nd_cut) {
-        nd_index = paf_out.edited_qry_end_overlap_idx;
-    } else {
-        nd_index = paf_read_data.ref_overlap_range.size() - 1;
-    }
 
     break_flag = false;
+    cs_add_flag = not st_cut;
     while (cs_iter != cs_str.end()) {
         // Analysis CS tag
         // :7287-at:1234+t:242-tag:123*tg*ga
@@ -123,19 +110,40 @@ PafEditData get_edited_paf_data(PafOutputData &paf_out, PafReadData &paf_read_da
             cs_iter = result_iter.ptr;
             assert(cs_iter > cs_chk_iter);
 
-            if (st_index <= range_index and range_index <= nd_index) {
-                if (st_index == nd_index and st_index == range_index) {
+            if (not cs_add_flag) {
+                if (paf_read_data.qry_overlap_range[range_index].first <= paf_out.edited_qry_str and
+                    paf_out.edited_qry_str <= paf_read_data.qry_overlap_range[range_index].second) {
+                    cs_add_flag = true; // Of course, now_st
+                }
+            }
+
+            if (cs_add_flag) {
+                bool now_st, now_nd;
+                if (paf_read_data.qry_overlap_range[range_index].first <= paf_out.edited_qry_str and
+                    paf_out.edited_qry_str <= paf_read_data.qry_overlap_range[range_index].second) {
+                    now_st = true;
+                } else {
+                    now_st = false;
+                }
+                if (paf_read_data.qry_overlap_range[range_index].first <= paf_out.edited_qry_end and
+                    paf_out.edited_qry_end <= paf_read_data.qry_overlap_range[range_index].second) {
+                    now_nd = true;
+                } else {
+                    now_nd = false;
+                }
+
+                if (now_st and now_nd) {
                     if (st_cut and nd_cut) {
                         assert(std::abs(paf_out.edited_ref_str - paf_read_data.ref_overlap_range[range_index].first) == (paf_out.edited_qry_str - paf_read_data.qry_overlap_range[range_index].first));
                         assert(std::abs(paf_read_data.ref_overlap_range[range_index].second - paf_out.edited_ref_end) == (paf_read_data.qry_overlap_range[range_index].second - paf_out.edited_qry_end));
 
                         equal_len = paf_out.edited_qry_end - paf_out.edited_qry_str + 1;
+                        cs_add_flag = false; // Nothing happen anyway
                         break_flag = true;
                     } else {
                         equal_len = converted_num;
-
                     }
-                } else if (st_index == range_index) {
+                } else if (now_st) {
                     if (st_cut) {
                         assert(std::abs(paf_out.edited_ref_str - paf_read_data.ref_overlap_range[range_index].first) == (paf_out.edited_qry_str - paf_read_data.qry_overlap_range[range_index].first));
 
@@ -143,11 +151,12 @@ PafEditData get_edited_paf_data(PafOutputData &paf_out, PafReadData &paf_read_da
                     } else {
                         equal_len = converted_num;
                     }
-                } else if (nd_index == range_index) {
+                } else if (now_nd) {
                     if (nd_cut) {
                         assert(std::abs(paf_read_data.ref_overlap_range[range_index].second - paf_out.edited_ref_end) == (paf_read_data.qry_overlap_range[range_index].second - paf_out.edited_qry_end));
 
                         equal_len = paf_out.edited_qry_end - paf_read_data.qry_overlap_range[range_index].first + 1;
+                        cs_add_flag = false; // Nothing happen anyway
                         break_flag = true;
                     } else {
                         equal_len = converted_num;
@@ -176,11 +185,14 @@ PafEditData get_edited_paf_data(PafOutputData &paf_out, PafReadData &paf_read_da
             assert(*cs_chk_iter == '+' or *cs_chk_iter == '-' or (*cs_chk_iter == '*' and variant_len == 2));
 
             if (*cs_chk_iter == '*') {
-                paf_edit_data.aln_len += 1; // diff
+                paf_edit_data.aln_len += 1;
             } else {
                 paf_edit_data.aln_len += variant_len;
             }
-            paf_edit_data.edit_cs_string += cs_str_substr(cs_chk_iter, cs_iter);
+
+            if (cs_add_flag) {
+                paf_edit_data.edit_cs_string += cs_str_substr(cs_chk_iter, cs_iter);
+            }
         }
     }
     return paf_edit_data;
@@ -213,7 +225,7 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
     }
     // never do smth on paf_ctg_data_original
 
-    /// paf_ctg_part: denotes continously overlapped ranges
+    /// paf_ctg_part: denotes continuously overlapped ranges
     auto n = (int64_t) paf_ctg_data_sorted.size();
     std::vector<int32_t> paf_ctg_part{};
     std::vector<int64_t> part_idx(n);
@@ -413,7 +425,7 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
             lft.qry_end = edited_loc_pre_end[rht.pre_idx][rht.cur_idx].first;
             lft.ref_end = edited_loc_pre_end[rht.pre_idx][rht.cur_idx].second;
         }
-        // No Overlap Guranteed
+        // No Overlap Guaranteed
         assert(lft.qry_end < rht.qry_str);
         int64_t qry_diff = rht.qry_str - lft.qry_end - 1;
         // we don't need SV_BASELINE
@@ -619,7 +631,6 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
     auto k_path_distances = sol.k_shortest_walks(src, dest, MAX_PATH_COUNT);
 
     assert(not k_path_distances.empty());
-    auto min_distance = *k_path_distances.begin();
 
     /// Get Actual Sequence of Paf Subsequences that has good (score, anom)
     // there is path with (x,y) pairs Edges.
@@ -655,11 +666,9 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
                             auto &px = paf_path[paf_path.size() - 2];
                             px.edited_qry_end = edited_loc_pre_end[x][y].first;
                             px.edited_ref_end = edited_loc_pre_end[x][y].second;
-                            px.edited_qry_end_overlap_idx = edited_overlap_idx[x][y].first;
                             auto &py = paf_path[paf_path.size() - 1];
                             py.edited_qry_str = edited_loc_str[x][y].first;
                             py.edited_ref_str = edited_loc_str[x][y].second;
-                            py.edited_qry_str_overlap_idx = edited_overlap_idx[x][y].second;
                         }
                     }
                 }else{
@@ -679,11 +688,9 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
                             auto &py = paf_path[paf_path.size() - 2];
                             py.edited_qry_end = edited_loc_pre_end[y][z].first;
                             py.edited_ref_end = edited_loc_pre_end[y][z].second;
-                            py.edited_qry_end_overlap_idx = edited_overlap_idx[y][z].first;
                             auto &pz = paf_path[paf_path.size() - 1];
                             pz.edited_qry_str = edited_loc_str[y][z].first;
                             pz.edited_ref_str = edited_loc_str[y][z].second;
-                            pz.edited_qry_str_overlap_idx = edited_overlap_idx[y][z].second;
                         }
                     }
                 }
@@ -1257,28 +1264,52 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
         return upgraded_paf_path;
     };
 
+    auto get_total_coverage = [&](const std::vector<PafOutputData>& paf_ctg_out) -> int64_t {
+        int64_t tot_coverage = 0;
+
+        for (auto& paf_out : paf_ctg_out) {
+            tot_coverage += ((paf_out.edited_qry_end - paf_out.edited_qry_str) + std::abs(paf_out.edited_ref_end - paf_out.edited_ref_str));
+        }
+
+        return tot_coverage;
+    };
+
+    auto is_equal_paf_distance = [](const Paf_Distance &lft, const Paf_Distance &rht)->bool{
+        return lft.score_sum() == rht.score_sum() and lft.anom == rht.anom;
+    };
+
+    auto min_distance = *k_path_distances.begin();
+
     /// Find EdgePath 1
+    int64_t max_tot_coverage, tot_coverage;
     auto path1 = sol.kth_shortest_walk_recover(src, dest, 0, false);
     auto paf_path1 = edge_path_to_paf_path(path1);
     auto upgraded_paf_path1 = upgrade_paf_path(paf_path1);
+    max_tot_coverage = get_total_coverage(upgraded_paf_path1);
 
     paf_ctg_out = upgraded_paf_path1;
 
     /// Find Max Edge Paths
     {
         int64_t idx = 1;
-        auto is_equal_paf_distance = [](const Paf_Distance &lft, const Paf_Distance &rht)->bool{
-            return lft.score_sum() == rht.score_sum() and lft.anom == rht.anom;
-        };
         for(;idx<k_path_distances.size() && is_equal_paf_distance(min_distance, k_path_distances[idx]);idx++){
             auto path_max = sol.kth_shortest_walk_recover(src, dest, idx, false);
             auto paf_path_max = edge_path_to_paf_path(path_max);
             auto upgraded_paf_path_max = upgrade_paf_path(paf_path_max);
-            paf_ctg_max_out.push_back(upgraded_paf_path_max);
+            tot_coverage = get_total_coverage(upgraded_paf_path_max);
+
+            if (tot_coverage > max_tot_coverage) {
+                max_tot_coverage = tot_coverage;
+                paf_ctg_out = upgraded_paf_path_max;
+                paf_ctg_max_out.clear();
+            } else if (max_tot_coverage == tot_coverage) {
+                paf_ctg_max_out.push_back(upgraded_paf_path_max);
+            }
         }
     }
 
     /// Find EdgePath 2 (Alt)
+    max_tot_coverage = -1;
     if ((int64_t) k_path_distances.size() >= 2 and min_distance.anom != anom_dis[dest]) {
         Paf_Distance ans{true, -1, -1};
         int64_t ans_up{}, ans_down{};
@@ -1295,26 +1326,24 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
                 ans_up = up;
                 ans_down = down;
                 ans_idx = i;
-            }
-        }
 
-        if(ans_idx != -1) {
-//            std::cout << min_distance.score_sum() << ',' << ans.score_sum() << ',' << paf_ctg_data_original[0].paf_index << '\n';
-            auto path2 = sol.kth_shortest_walk_recover(src, dest, ans_idx, false);
-            auto paf_path2 = edge_path_to_paf_path(path2);
-            auto upgraded_paf_path2 = upgrade_paf_path(paf_path2);
-            paf_ctg_alt_out = upgraded_paf_path2;
-//            for (auto& paf_line : paf_path2){
-//                auto& paf_data_line = paf_ctg_data_original[paf_line.ctg_index];
-//
-//                auto out = std::vector<std::string>({std::to_string(paf_ctg_data_original[0].paf_index + 1), std::to_string(paf_data_line.qry_total_length), std::to_string(paf_line.edited_qry_str), std::to_string(paf_line.edited_qry_end + 1),
-//                                                     paf_data_line.aln_fwd ? "+" : "-", std::to_string(paf_data_line.ref_chr),
-//                                                     std::to_string(paf_data_line.ref_total_length), std::to_string(paf_line.edited_ref_str), std::to_string(paf_line.edited_ref_end + 1)});
-//                for (auto& t: out) {
-//                    std::cout << t << '\t';
-//                }
-//                std::cout << '\n';
-//            }
+                auto path2 = sol.kth_shortest_walk_recover(src, dest, ans_idx, false);
+                auto paf_path2 = edge_path_to_paf_path(path2);
+                auto upgraded_paf_path2 = upgrade_paf_path(paf_path2);
+                max_tot_coverage = get_total_coverage(paf_ctg_alt_out);
+
+                paf_ctg_alt_out = upgraded_paf_path2;
+            } else if (ans_idx != -1 and is_equal_paf_distance(k_path_distances[i], k_path_distances[ans_idx])) {
+                auto path2 = sol.kth_shortest_walk_recover(src, dest, i, false);
+                auto paf_path2 = edge_path_to_paf_path(path2);
+                auto upgraded_paf_path2 = upgrade_paf_path(paf_path2);
+                tot_coverage = get_total_coverage(paf_ctg_alt_out);
+
+                assert(max_tot_coverage != -1);
+                if (tot_coverage > max_tot_coverage) {
+                    paf_ctg_alt_out = upgraded_paf_path2;
+                }
+            }
         }
     }
 }

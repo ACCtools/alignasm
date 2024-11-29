@@ -1,9 +1,11 @@
 #include "paf_data.hpp"
 
-#include "csv.hpp"
-#include "argparse/argparse.hpp"
+#include <argparse/argparse.hpp>
 #include <ankerl/unordered_dense.h>
+#include "csv.hpp"
 #include <filesystem>
+#include <indicators/progress_bar.hpp>
+#include <indicators/cursor_control.hpp>
 
 #include <iostream>
 #include <cinttypes>
@@ -279,15 +281,15 @@ int32_t main(int argc, char** argv) {
         }
     }
 
-    std::cout << "File read complete!\n";
+    std::cout << "File read complete" << std::endl;
 
     /** Output Data */
     std::vector<std::vector<PafOutputData>> paf_out_data(paf_data.size()), paf_alt_out_data(paf_data.size());
-    std::vector< std::vector<std::vector<PafOutputData>> > paf_max_out_datas(paf_data.size());
+    std::vector<std::vector<std::vector<PafOutputData>> > paf_max_out_datas(paf_data.size());
 
 #ifdef NDEBUG
     if (num_thread > 1) {
-        std::cout << "Task in Multi-Threading" << '\n';
+        std::cout << "Analyze PAF data in parallel" << std::endl;
         tbb::task_arena arena(num_thread);
 
         arena.execute([&paf_data, &paf_out_data, &paf_alt_out_data, &paf_max_out_datas] {
@@ -299,9 +301,20 @@ int32_t main(int argc, char** argv) {
                               });
         });
     } else {
+        namespace id = indicators;
+        id::show_console_cursor(false);
+        id::ProgressBar bar{
+            id::option::BarWidth{50},
+            id::option::MaxProgress{paf_data.size()},
+            id::option::PrefixText{"Analyze PAF data "},
+        };
+
         for (int32_t i = 0; i < paf_data.size(); i++) {
-            std::cout << "Task " << (i+1) << " in Progress." << '\n';
             solve_ctg_read(paf_data[i], paf_out_data[i], paf_alt_out_data[i], paf_max_out_datas[i]);
+            bar.set_option(id::option::PostfixText{
+                std::to_string(i + 1) + "/" + std::to_string(paf_data.size())
+            });
+            bar.tick();
         }
     }
 #else
@@ -346,7 +359,48 @@ int32_t main(int argc, char** argv) {
         }
     };
 
-    std::cout << "Writing Output" << '\n';
+    auto process_max_output = [&](auto &paf_out_data_, const std::string &prefix = "") {
+        /* Write Output */
+        std::ofstream paf_out(std::filesystem::absolute(paf_loc).replace_extension(".aln" + prefix + ".paf"));
+        auto writer = csv::make_tsv_writer(paf_out);
+
+        assert(ctg_name_vector.size() == paf_out_data_.size() and paf_out_data_.size() == paf_data.size());
+
+        auto ctg_n = ctg_name_vector.size();
+        for (auto i = 0; i < ctg_n; i++) {
+            int32_t cnt = 0;
+            for (auto& paf_out_single_data : paf_out_data_[i]) {
+                ++cnt;
+                for (auto& paf_line : paf_out_single_data) {
+                    auto& paf_data_line = paf_data[i][paf_line.ctg_index];
+                    auto paf_edit_data = get_edited_paf_data(paf_line, paf_data_line);
+#ifndef NDEBUG
+                    if (not paf_edit_data.is_cut) {
+                        assert(paf_edit_data.aln_len == paf_data_line.aln_len);
+                        assert(paf_edit_data.mat_num == paf_data_line.mat_num);
+                        assert(paf_edit_data.edit_cs_string == paf_data_line.cs_string);
+                    }
+#endif
+                    writer << std::vector<std::string>({ctg_name_vector[i] + "." + std::to_string(cnt), // PAF_QRY_CHR with count
+                                                        std::to_string(paf_data_line.qry_total_length), // PAF_QRY_TOT
+                                                        std::to_string(paf_line.edited_qry_str), // PAF_QRY_STR
+                                                        std::to_string(paf_line.edited_qry_end + 1), // PAF_QRY_END
+                                                        paf_data_line.aln_fwd ? "+" : "-", // PAF_ALN_FWD
+                                                        chr_rev_map[paf_data_line.ref_chr], // PAF_REF_CHR
+                                                        std::to_string(paf_data_line.ref_total_length), // PAF_REF_TOT
+                                                        std::to_string(paf_data_line.aln_fwd ? paf_line.edited_ref_str : paf_line.edited_ref_end), // PAF_REF_STR (swap)
+                                                        std::to_string((paf_data_line.aln_fwd ? paf_line.edited_ref_end : paf_line.edited_ref_str) + 1), // PAF_REF_END (swap)
+                                                        std::to_string(paf_edit_data.mat_num), // PAF_MAT_NUM
+                                                        std::to_string(paf_edit_data.aln_len), // PAF_ALN_LEN
+                                                        std::to_string(paf_data_line.map_qul), // PAF_MAT_QUL
+                                                        paf_edit_data.edit_cs_string}); // PAF_CS_STR
+                }
+            }
+        }
+    };
+
+    std::cout << "Write output PAF file" << std::endl;
     process_output(paf_out_data);
     process_output(paf_alt_out_data, ".alt");
+    process_max_output(paf_max_out_datas, ".all");
 }
