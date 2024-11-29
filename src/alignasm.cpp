@@ -35,7 +35,6 @@ int32_t main(int argc, char** argv) {
             .scan<'d', int>()
             .metavar("THREAD");
 
-
     program.add_argument("-a", "--alt")
             .help("Location of alternative PAF file")
             .nargs(1)
@@ -77,7 +76,7 @@ int32_t main(int argc, char** argv) {
 
     /** CSV Process Data */
     using ChrMap = ankerl::unordered_dense::map <std::string, int32_t>;
-    using ChrRevMap = ankerl::unordered_dense::map <int32_t, std::string >;
+    using ChrRevMap = ankerl::unordered_dense::map <int32_t, std::string>;
 
     ChrMap chr_map{};
     ChrRevMap chr_rev_map {};
@@ -142,7 +141,10 @@ int32_t main(int argc, char** argv) {
         paf_read_data.map_qul = read[PAF_MAT_QUL].get<uint8_t>();
 
 
-        // cs tag is last in alignmentpaf
+        // cs tag is last in alignment paf
+        paf_read_data.cs_string = read[read.size() - 1].get<std::string_view>();
+        paf_read_data.mat_num = read[PAF_MAT_NUM].get<int32_t>();
+        paf_read_data.aln_len = read[PAF_ALN_LEN].get<int32_t>();
         get_overlap_range(paf_read_data, read[read.size() - 1].get<std::string_view>());
         ctg_data_vector.push_back(paf_read_data);
     }
@@ -242,6 +244,9 @@ int32_t main(int argc, char** argv) {
             paf_read_data.map_qul = read[PAF_MAT_QUL].get<uint8_t>();
 
             // cs tag is last in alignment
+            paf_read_data.cs_string = read[read.size() - 1].get<std::string_view>();
+            paf_read_data.mat_num = read[PAF_MAT_NUM].get<int32_t>();
+            paf_read_data.aln_len = read[PAF_ALN_LEN].get<int32_t>();
             get_overlap_range(paf_read_data, read[read.size() - 1].get<std::string_view>());
 
             if (tar_qry_offset == -1) {
@@ -316,10 +321,27 @@ int32_t main(int argc, char** argv) {
         for (auto i = 0; i < ctg_n; i++) {
             for (auto& paf_line : paf_out_data_[i]) {
                 auto& paf_data_line = paf_data[i][paf_line.ctg_index];
-
-                writer << std::vector<std::string>({ctg_name_vector[i], std::to_string(paf_data_line.qry_total_length), std::to_string(paf_line.edited_qry_str), std::to_string(paf_line.edited_qry_end + 1),
-                                                    paf_data_line.aln_fwd ? "+" : "-", chr_rev_map[paf_data_line.ref_chr],
-                                                    std::to_string(paf_data_line.ref_total_length), std::to_string(paf_line.edited_ref_str), std::to_string(paf_line.edited_ref_end + 1)});
+                auto paf_edit_data = get_edited_paf_data(paf_line, paf_data_line);
+#ifndef NDEBUG
+                if (not paf_edit_data.is_cut) {
+                    assert(paf_edit_data.aln_len == paf_data_line.aln_len);
+                    assert(paf_edit_data.mat_num == paf_data_line.mat_num);
+                    assert(paf_edit_data.edit_cs_string == paf_data_line.cs_string);
+                }
+#endif
+                writer << std::vector<std::string>({ctg_name_vector[i], // PAF_QRY_CHR
+                                                    std::to_string(paf_data_line.qry_total_length), // PAF_QRY_TOT
+                                                    std::to_string(paf_line.edited_qry_str), // PAF_QRY_STR
+                                                    std::to_string(paf_line.edited_qry_end + 1), // PAF_QRY_END
+                                                    paf_data_line.aln_fwd ? "+" : "-", // PAF_ALN_FWD
+                                                    chr_rev_map[paf_data_line.ref_chr], // PAF_REF_CHR
+                                                    std::to_string(paf_data_line.ref_total_length), // PAF_REF_TOT
+                                                    std::to_string(paf_data_line.aln_fwd ? paf_line.edited_ref_str : paf_line.edited_ref_end), // PAF_REF_STR (swap)
+                                                    std::to_string((paf_data_line.aln_fwd ? paf_line.edited_ref_end : paf_line.edited_ref_str) + 1), // PAF_REF_END (swap)
+                                                    std::to_string(paf_edit_data.mat_num), // PAF_MAT_NUM
+                                                    std::to_string(paf_edit_data.aln_len), // PAF_ALN_LEN
+                                                    std::to_string(paf_data_line.map_qul), // PAF_MAT_QUL
+                                                    paf_edit_data.edit_cs_string}); // PAF_CS_STR
             }
         }
     };
@@ -327,5 +349,4 @@ int32_t main(int argc, char** argv) {
     std::cout << "Writing Output" << '\n';
     process_output(paf_out_data);
     process_output(paf_alt_out_data, ".alt");
-
 }

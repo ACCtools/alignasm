@@ -16,11 +16,11 @@ void get_overlap_range(PafReadData &paf_read_data, std::string_view cs_str) {
 //    std::cout << cs_str << std::endl;
 
     int64_t ref_step;
-    int64_t ref_index;
-    int64_t qry_index = paf_read_data.qry_str;
+    int64_t ref_index, qry_index;
 
     // str is the real begin
     ref_index = paf_read_data.ref_str;
+    qry_index = paf_read_data.qry_str;
     ref_step = paf_read_data.aln_fwd ? 1 : -1;
 
     int64_t converted_num = -1;
@@ -37,13 +37,15 @@ void get_overlap_range(PafReadData &paf_read_data, std::string_view cs_str) {
             auto result_iter = std::from_chars(cs_iter, cs_str.end(), converted_num);
             cs_iter = result_iter.ptr;
 
-            assert(cs_iter > cs_chk_iter);
             if (cs_iter > cs_chk_iter) {
                 paf_read_data.ref_overlap_range.emplace_back(ref_index, ref_index + (converted_num - 1) * ref_step);
                 ref_index += converted_num * ref_step;
 
                 paf_read_data.qry_overlap_range.emplace_back(qry_index, qry_index + (converted_num - 1));
                 qry_index += converted_num;
+            } else {
+                // Never happen
+                assert(false);
             }
         } else {
             cs_chk_iter = cs_iter++;
@@ -68,10 +70,121 @@ void get_overlap_range(PafReadData &paf_read_data, std::string_view cs_str) {
             }
         }
     }
-
 }
 
+PafEditData get_edited_paf_data(PafOutputData &paf_out, PafReadData &paf_read_data) {
+    PafEditData paf_edit_data = {"cs:Z:", 0, 0, true};
+    assert(paf_edit_data.edit_cs_string.length() == CS_TAG_START);
+    assert(paf_read_data.ref_overlap_range.size() == paf_read_data.qry_overlap_range.size());
 
+    std::string_view cs_str = paf_read_data.cs_string;
+    auto cs_iter = cs_str.begin() + CS_TAG_START;
+    decltype(cs_iter) cs_chk_iter;
+
+    auto cs_str_substr = [&](decltype(cs_iter) st, decltype(cs_iter) nd) {
+        auto st_ind = st - cs_str.begin();
+        auto nd_ind = nd - cs_str.begin();
+        return cs_str.substr(st_ind, nd_ind - st_ind);
+    };
+
+    bool break_flag;
+    bool st_cut = paf_out.edited_qry_str_overlap_idx != -1;
+    bool nd_cut = paf_out.edited_qry_end_overlap_idx != -1;
+    paf_edit_data.is_cut = st_cut or nd_cut;
+
+    int64_t equal_len;
+    int64_t converted_num = -1;
+    int32_t range_index = -1;
+    int32_t st_index, nd_index;
+
+    if (st_cut) {
+        st_index = paf_out.edited_qry_str_overlap_idx;
+    } else {
+        st_index = -1;
+    }
+
+    if (nd_cut) {
+        nd_index = paf_out.edited_qry_end_overlap_idx;
+    } else {
+        nd_index = paf_read_data.ref_overlap_range.size() - 1;
+    }
+
+    break_flag = false;
+    while (cs_iter != cs_str.end()) {
+        // Analysis CS tag
+        // :7287-at:1234+t:242-tag:123*tg*ga
+        if (*cs_iter == ':') {
+            assert(cs_iter != cs_str.end() and std::next(cs_iter) != cs_str.end());
+            range_index++;
+            cs_chk_iter = ++cs_iter;
+
+            // Returns first non-digit pointer
+            auto result_iter = std::from_chars(cs_iter, cs_str.end(), converted_num);
+            cs_iter = result_iter.ptr;
+            assert(cs_iter > cs_chk_iter);
+
+            if (st_index <= range_index and range_index <= nd_index) {
+                if (st_index == nd_index and st_index == range_index) {
+                    if (st_cut and nd_cut) {
+                        assert(std::abs(paf_out.edited_ref_str - paf_read_data.ref_overlap_range[range_index].first) == (paf_out.edited_qry_str - paf_read_data.qry_overlap_range[range_index].first));
+                        assert(std::abs(paf_read_data.ref_overlap_range[range_index].second - paf_out.edited_ref_end) == (paf_read_data.qry_overlap_range[range_index].second - paf_out.edited_qry_end));
+
+                        equal_len = paf_out.edited_qry_end - paf_out.edited_qry_str + 1;
+                        break_flag = true;
+                    } else {
+                        equal_len = converted_num;
+
+                    }
+                } else if (st_index == range_index) {
+                    if (st_cut) {
+                        assert(std::abs(paf_out.edited_ref_str - paf_read_data.ref_overlap_range[range_index].first) == (paf_out.edited_qry_str - paf_read_data.qry_overlap_range[range_index].first));
+
+                        equal_len = paf_read_data.qry_overlap_range[range_index].second - paf_out.edited_qry_str + 1;
+                    } else {
+                        equal_len = converted_num;
+                    }
+                } else if (nd_index == range_index) {
+                    if (nd_cut) {
+                        assert(std::abs(paf_read_data.ref_overlap_range[range_index].second - paf_out.edited_ref_end) == (paf_read_data.qry_overlap_range[range_index].second - paf_out.edited_qry_end));
+
+                        equal_len = paf_out.edited_qry_end - paf_read_data.qry_overlap_range[range_index].first + 1;
+                        break_flag = true;
+                    } else {
+                        equal_len = converted_num;
+                    }
+                } else {
+                    equal_len = converted_num;
+                }
+
+                paf_edit_data.edit_cs_string += (":" + std::to_string(equal_len));
+                paf_edit_data.aln_len += equal_len;
+                paf_edit_data.mat_num += equal_len;
+
+                if (break_flag) {
+                    break_flag = false;
+                    break;
+                }
+            }
+        } else {
+            cs_chk_iter = cs_iter++;
+            while (cs_iter != cs_str.end() and isalpha(*cs_iter) > 0) {
+                ++cs_iter;
+            }
+
+            auto variant_len = cs_iter - cs_chk_iter - 1;
+            assert(variant_len > 0);
+            assert(*cs_chk_iter == '+' or *cs_chk_iter == '-' or (*cs_chk_iter == '*' and variant_len == 2));
+
+            if (*cs_chk_iter == '*') {
+                paf_edit_data.aln_len += 1; // diff
+            } else {
+                paf_edit_data.aln_len += variant_len;
+            }
+            paf_edit_data.edit_cs_string += cs_str_substr(cs_chk_iter, cs_iter);
+        }
+    }
+    return paf_edit_data;
+}
 
 /// Get Best path in paf_ctg_data_original
 void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector<PafOutputData> &paf_ctg_out, std::vector<PafOutputData> &paf_ctg_alt_out, std::vector<std::vector<PafOutputData>> &paf_ctg_max_out) {

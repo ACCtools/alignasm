@@ -1,9 +1,10 @@
-#ifndef READASM_MAIN_H
-#define READASM_MAIN_H
+#ifndef ALIGNASM_MAIN_H
+#define ALIGNASM_MAIN_H
 
 #include <cassert>
 #include <cinttypes>
 #include <vector>
+#include <string>
 #include <string_view>
 
 constexpr int64_t QRY_WEIGHT = 1;
@@ -37,6 +38,9 @@ struct PafReadData {
     int32_t paf_index;
     int32_t ctg_index;
     int32_t ctg_sorted_index;
+    std::string cs_string;
+    int32_t mat_num;
+    int32_t aln_len;
     std::vector<std::pair<int64_t, int64_t>> ref_overlap_range; // [l, r]
     std::vector<std::pair<int64_t, int64_t>> qry_overlap_range; // [l, r]
     int64_t ref_total_length; // the maximum range of ref.
@@ -91,6 +95,13 @@ struct PafOutputData {
             edited_ref_str(readData.ref_str), edited_ref_end(readData.ref_end) {}
 };
 
+
+struct PafEditData {
+    std::string edit_cs_string;
+    int32_t mat_num;
+    int32_t aln_len;
+    bool is_cut;
+};
 
 /// Distance between Paf nodes
 struct Paf_Distance{
@@ -158,7 +169,8 @@ struct Paf_Distance{
 };
 
 void get_overlap_range(PafReadData &paf_read_data, std::string_view cs_str);
+PafEditData get_edited_paf_data(PafOutputData &paf_out, PafReadData &paf_read_data);
 void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data, std::vector<PafOutputData> &paf_ctg_out, std::vector<PafOutputData> &paf_ctg_alt_out, std::vector<std::vector<PafOutputData>> &paf_ctg_max_out);
 
 
-#endif //READASM_MAIN_H
+#endif //ALIGNASM_MAIN_H
