@@ -17,10 +17,6 @@
 #include <charconv>
 #include <string_view>
 
-#ifdef NDEBUG
-#include <tbb/parallel_for.h>
-#endif
-
 
 int32_t main(int argc, char** argv) {
     /** Test Session */
@@ -30,12 +26,6 @@ int32_t main(int argc, char** argv) {
             .help("Location of PAF file")
             .required()
             .nargs(1);
-
-    program.add_argument("-t", "--thread")
-            .help("Number of threads")
-            .default_value(1)
-            .scan<'d', int>()
-            .metavar("THREAD");
 
     program.add_argument("-a", "--alt")
             .help("Location of alternative PAF file")
@@ -57,9 +47,6 @@ int32_t main(int argc, char** argv) {
     }
 
     std::filesystem::path paf_loc {program.get<std::string>("PAF_LOC")};
-#ifdef NDEBUG
-    int num_thread = program.get<int>("--thread");
-#endif
     if (paf_loc.extension() != ".paf") {
         std::cerr << "Wrong PAF file : " << std::filesystem::absolute(paf_loc);
         std::cerr << program;
@@ -221,7 +208,6 @@ int32_t main(int argc, char** argv) {
 
             PafReadData paf_read_data{};
             paf_read_data.paf_index = ctg_last_data.paf_index;
-            paf_read_data.ctg_index = ctg_last_data.ctg_index + 1;
 
             paf_read_data.qry_total_length = ctg_last_data.qry_total_length;
             paf_read_data.qry_str = read[PAF_QRY_STR].get<int64_t>() + qry_offset;
@@ -258,6 +244,7 @@ int32_t main(int argc, char** argv) {
 
             if (tar_qry_offset != qry_offset or tar_real_qry_chr != real_qry_chr) {
                 if (not tar_flag) {
+                    ratio_max_paf_data.ctg_index = paf_data[paf_map[tar_real_qry_chr]].size();
                     paf_data[paf_map[tar_real_qry_chr]].push_back(ratio_max_paf_data);
                 }
 
@@ -275,11 +262,18 @@ int32_t main(int argc, char** argv) {
             }
 
             if (aln_ratio > ALT_BASELINE) {
+                paf_read_data.ctg_index = paf_data[paf_map[real_qry_chr]].size();
                 paf_data[paf_map[real_qry_chr]].push_back(paf_read_data);
                 tar_flag = true;
             }
         }
     }
+
+#ifndef NDEBUG
+    for (auto& i : paf_data) {
+        assert(i.back().ctg_index == i.size() - 1);
+    }
+#endif
 
     std::cout << "File read complete" << std::endl;
 
@@ -287,41 +281,21 @@ int32_t main(int argc, char** argv) {
     std::vector<std::vector<PafOutputData>> paf_out_data(paf_data.size()), paf_alt_out_data(paf_data.size());
     std::vector<std::vector<std::vector<PafOutputData>> > paf_max_out_datas(paf_data.size());
 
-#ifdef NDEBUG
-    if (num_thread > 1) {
-        std::cout << "Analyze PAF data in parallel" << std::endl;
-        tbb::task_arena arena(num_thread);
-
-        arena.execute([&paf_data, &paf_out_data, &paf_alt_out_data, &paf_max_out_datas] {
-            tbb::parallel_for(tbb::blocked_range<unsigned long>(0, paf_data.size()),
-                              [&paf_data, &paf_out_data, &paf_alt_out_data, &paf_max_out_datas](const tbb::blocked_range<unsigned long>& range) {
-                                  for (auto i = range.begin(); i < range.end(); i++) {
-                                      solve_ctg_read(paf_data[i], paf_out_data[i], paf_alt_out_data[i], paf_max_out_datas[i]);
-                                  }
-                              });
-        });
-    } else {
-        namespace id = indicators;
-        id::show_console_cursor(false);
-        id::ProgressBar bar{
+    namespace id = indicators;
+    id::show_console_cursor(false);
+    id::ProgressBar bar{
             id::option::BarWidth{50},
             id::option::MaxProgress{paf_data.size()},
             id::option::PrefixText{"Analyze PAF data "},
-        };
+    };
 
-        for (int32_t i = 0; i < paf_data.size(); i++) {
-            solve_ctg_read(paf_data[i], paf_out_data[i], paf_alt_out_data[i], paf_max_out_datas[i]);
-            bar.set_option(id::option::PostfixText{
-                std::to_string(i + 1) + "/" + std::to_string(paf_data.size())
-            });
-            bar.tick();
-        }
-    }
-#else
     for (int32_t i = 0; i < paf_data.size(); i++) {
         solve_ctg_read(paf_data[i], paf_out_data[i], paf_alt_out_data[i], paf_max_out_datas[i]);
+        bar.set_option(id::option::PostfixText{
+                std::to_string(i + 1) + "/" + std::to_string(paf_data.size())
+        });
+        bar.tick();
     }
-#endif
 
     auto process_output = [&](auto &paf_out_data_, const std::string &prefix = "") {
         /* Write Output */

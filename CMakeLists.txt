@@ -9,7 +9,6 @@ if (CMAKE_BUILD_TYPE STREQUAL "Debug")
     add_compile_options(-fprofile-arcs -ftest-coverage)
 endif()
 
-find_package(TBB REQUIRED)
 find_package(unordered_dense REQUIRED)
 
 FetchContent_Declare(
@@ -46,4 +45,4 @@ if (CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_link_libraries(alignasm gcov)
 endif()
 
-target_link_libraries(alignasm csv unordered_dense::unordered_dense TBB::tbb argparse)
+target_link_libraries(alignasm csv unordered_dense::unordered_dense argparse)
