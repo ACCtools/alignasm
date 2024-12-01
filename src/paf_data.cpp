@@ -270,6 +270,7 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
         edited_overlap_idx[i][i] = {0, 0};
     }
 
+    // make Internal Vertex i -> j
     for (int64_t i = 0; i < n; i++) {
         const auto &pre = paf_ctg_data_sorted[i];
         int64_t pre_len = (int64_t) pre.qry_overlap_range.size();
@@ -367,10 +368,10 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
     struct Internal_Vertex {
         int64_t pre_idx{-1};
         int64_t cur_idx{-1};
-        bool is_one{true}; // is one idx
+        bool is_one{true}; // is one idx (alone)
         int64_t qry_str{}, qry_end{};
         int64_t ref_str{}, ref_end{};
-        bool default_vertex{false};
+        bool default_vertex{false}; // alone
         Internal_Vertex() = default;
         void set_idx(int64_t idx){
             pre_idx = cur_idx = idx;
@@ -396,9 +397,11 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
         if (edited_loc_str[lft.pre_idx][lft.cur_idx] == FAIL_CUT or edited_loc_str[rht.pre_idx][rht.cur_idx] == FAIL_CUT)
             return false;
         if (not rht.is_one) {
+            // (ij/jj) -> (jk)
             if (lft.cur_idx != rht.pre_idx) return false;
             return lft.qry_str < rht.qry_str;
         } else {
+            // (ii/ij) -> (kk)
             if (part_idx[lft.cur_idx] + 1 == part_idx[rht.cur_idx]) return true;
             if (part_idx[lft.cur_idx] != part_idx[rht.cur_idx]) return false;
             return lft.qry_end < rht.qry_str; //no overlap
@@ -527,6 +530,7 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
                 add_edge(graph, vtx_to_index(i, i), dest, dist);
             }
         }
+        // block: queries are overlapped in a chain
         // ith block Inside
         {
             for (int64_t block = 0; block + 1 < paf_ctg_part.size(); block++) {
