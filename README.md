@@ -27,5 +27,5 @@ For a more detailed pipeline on how to use Alignasm, refer to [ACCtools-pipeline
 
 ## Author
 
-Kyungmo Ku <kyungmoku7141@gmail.com>  
+Kyungmo Ku <pentagon03.codes@gmail.com>  
 Hyunwoo Ryu <wowo0118@korea.ac.kr>
