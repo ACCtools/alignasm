@@ -1,0 +1,11 @@
+2024-12-22
+16:51-
+TODO:
+- non-skip linkable 알고리즘
+    - 전역 변수로 옵션
+    - Graph 만들 때부터 O(N)으로 만들기
+- 최종 path에서 Vertex Fill -> Path Fill로 변경
+    - 간격이 있는 두 노드가 있으면 재귀적으로 한번 더 path 찾기
+    - qry_score sum을 최우선으로 하기. 
+- 새로운 path를 기존 path에 끼워넣는다. 
+    - (PafOutputData)에 bool 변수를 넣어서 true로 표시: `is_in_alt_path`
