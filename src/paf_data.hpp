@@ -75,7 +75,7 @@ struct PafOutputData {
     int32_t ctg_index;
     int64_t edited_qry_str, edited_qry_end;
     int64_t edited_ref_str, edited_ref_end;
-
+    bool is_in_alt_path;
     PafOutputData()
             : ctg_index(-1), edited_qry_str(0), edited_qry_end(0),
               edited_ref_str(0), edited_ref_end(0) {}

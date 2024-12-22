@@ -402,7 +402,7 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
             return lft.qry_str < rht.qry_str;
         } else {
             // (ii/ij) -> (kk)
-            // TODO: 1. make this faster -> edit make_graph / 2. default_vertex -> delete or find out what this does. / 3. update_path how???
+            // TODO: 1. make this faster -> edit make_graph / 2. default_vertex -> find out what this does.
             for(int i=0;i<paf_ctg_data_sorted.size();i++){
                 if(lft.qry_end < paf_ctg_data_sorted[i].qry_str and paf_ctg_data_sorted[i].qry_end < rht.qry_str){
                     return false;
