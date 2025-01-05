@@ -77,15 +77,17 @@ struct PafOutputData {
     int32_t ctg_index;
     int64_t edited_qry_str, edited_qry_end;
     int64_t edited_ref_str, edited_ref_end;
-    bool is_in_alt_path;
+    bool is_alt_path;
     PafOutputData()
             : ctg_index(-1), edited_qry_str(0), edited_qry_end(0),
-              edited_ref_str(0), edited_ref_end(0) {}
-
+              edited_ref_str(0), edited_ref_end(0), is_alt_path(false) {}
+    void set_alt_path(){
+        is_alt_path = true;
+    }
     explicit PafOutputData(const PafReadData& readData):
             ctg_index(readData.ctg_index),
             edited_qry_str(readData.qry_str), edited_qry_end(readData.qry_end),
-            edited_ref_str(readData.ref_str), edited_ref_end(readData.ref_end) {}
+            edited_ref_str(readData.ref_str), edited_ref_end(readData.ref_end), is_alt_path(false){}
 };
 
 
@@ -96,68 +98,78 @@ struct PafEditData {
     bool is_cut;
 };
 
+enum class PafDistanceCompareMode{
+    CALC_SUM_MODE,
+    QRY_SCORE_MODE,
+};
+
 /// Distance between Paf nodes
-struct Paf_Distance{
+struct PafDistance{
+    static thread_local PafDistanceCompareMode cmp_mode;
+    static void set_mode(PafDistanceCompareMode mode){
+        cmp_mode = mode;
+    }
     // somehow, shouldn't initialize these below to use basic_string
-    bool calc_sum;
+    bool calc_sum_chk;
     int64_t qry_score, ref_score;
     int64_t anom;
     int64_t qul_nonzero, qul_total;
-    explicit Paf_Distance(bool calc_sum_, int64_t qry_score_ = 0, int64_t ref_score_ = 0,
-                          int64_t anom_ = 0, int64_t qul_nonzero_ = 0, int64_t qul_total_ = 0)
-            :calc_sum(calc_sum_), qry_score(qry_score_), ref_score(ref_score_),
-             anom(anom_), qul_nonzero(qul_nonzero_), qul_total(qul_total_){}
-    [[nodiscard]] static Paf_Distance max(){
-        return Paf_Distance(false, -1, -1, -1, -1);
+    explicit PafDistance(bool calc_sum_chk_, int64_t qry_score_ = 0, int64_t ref_score_ = 0,
+                         int64_t anom_ = 0, int64_t qul_nonzero_ = 0, int64_t qul_total_ = 0)
+            : calc_sum_chk(calc_sum_chk_), qry_score(qry_score_), ref_score(ref_score_),
+              anom(anom_), qul_nonzero(qul_nonzero_), qul_total(qul_total_){}
+    [[nodiscard]] static PafDistance max(){
+        return PafDistance(false, -1, -1, -1, -1);
     }
     [[nodiscard]] int64_t score_sum() const{
         return qry_score + ref_score;
     }
-    bool operator <(const Paf_Distance& rht) const{ // better
+    bool operator <(const PafDistance& rht) const{ // better
         if(*this == max()) return false;
         if(rht == max()) return true;
-        assert(calc_sum == rht.calc_sum);
-
-        if(calc_sum) {
+        assert(calc_sum_chk == rht.calc_sum_chk);
+        if(cmp_mode == PafDistanceCompareMode::CALC_SUM_MODE) {
             if (score_sum() != rht.score_sum())
                 return score_sum() < rht.score_sum();
-        }else{
+        }else if(cmp_mode == PafDistanceCompareMode::QRY_SCORE_MODE){
             if(qry_score != rht.qry_score) return qry_score < rht.qry_score;
             if(ref_score != rht.ref_score) return ref_score < rht.ref_score;
+        }else{
+            assert(0); // never happens
         }
         if(anom != rht.anom) return anom < rht.anom;
         int64_t tot = qul_total ? qul_total: 1;
         int64_t rht_tot = rht.qul_total ? rht.qul_total : 1;
         return qul_nonzero * rht_tot > rht.qul_nonzero * tot;
     }
-    bool operator >(const Paf_Distance& rht) const{
+    bool operator >(const PafDistance& rht) const{
         return rht < *this;
     }
-    bool operator ==(const Paf_Distance& rht) const{
+    bool operator ==(const PafDistance& rht) const{
         int64_t tot = qul_total ? qul_total: 1;
         int64_t rht_tot = rht.qul_total ? rht.qul_total : 1;
         return (qry_score == rht.qry_score) and (ref_score == rht.ref_score)
                and (anom == rht.anom) and (qul_nonzero * rht_tot == rht.qul_nonzero * tot);
     }
-    bool operator <= (const Paf_Distance& rht) const{
+    bool operator <= (const PafDistance& rht) const{
         return *this == rht or *this < rht;
     }
-    bool operator >= (const Paf_Distance &rht) const{
+    bool operator >= (const PafDistance &rht) const{
         return *this == rht or *this > rht;
     }
-    bool operator !=(const Paf_Distance& rht) const{
+    bool operator !=(const PafDistance& rht) const{
         return not (*this == rht);
     }
-    Paf_Distance operator+(const Paf_Distance& rht) const{
+    PafDistance operator+(const PafDistance& rht) const{
         assert(*this != max() and rht != max());
-        assert(calc_sum == rht.calc_sum);
-        return Paf_Distance(calc_sum, qry_score + rht.qry_score,
+        assert(calc_sum_chk == rht.calc_sum_chk);
+        return PafDistance(calc_sum_chk, qry_score + rht.qry_score,
                             ref_score + rht.ref_score, anom + rht.anom, qul_nonzero + rht.qul_nonzero, qul_total + rht.qul_total);
     }
-    Paf_Distance operator-(const Paf_Distance& rht) const{
+    PafDistance operator-(const PafDistance& rht) const{
         assert(*this != max() and rht != max());
-        assert(calc_sum == rht.calc_sum);
-        return Paf_Distance(calc_sum, qry_score - rht.qry_score, ref_score - rht.ref_score, anom - rht.anom, qul_nonzero - rht.qul_nonzero, qul_total - rht.qul_total);
+        assert(calc_sum_chk == rht.calc_sum_chk);
+        return PafDistance(calc_sum_chk, qry_score - rht.qry_score, ref_score - rht.ref_score, anom - rht.anom, qul_nonzero - rht.qul_nonzero, qul_total - rht.qul_total);
     }
 };
 
