@@ -4,4 +4,4 @@ cmake-*
 build
 Archive
 *.paf
-log
+*.log
