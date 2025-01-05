@@ -35,4 +35,5 @@ struct PafDistance{
 - 새로운 path를 기존 path에 끼워넣는다.
     - (PafOutputData)에 bool 변수를 넣어서 true로 표시: `is_alt_path`
 TODO:
-- int64_t, int32_t 언젠가 갈아엎기
+- int64_t, int32_t 규칙 설정
+- upgrade_edge_path에서 kShortestWalksSolver를 Custom Dijkstra로 교체 (amortized O(N) possible ?)
