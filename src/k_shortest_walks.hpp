@@ -21,8 +21,8 @@
 /**
  * Title: K Shortest Walks using Eppstein98(https://ics.uci.edu/~eppstein/pubs/Epp-SJC-98.pdf)
  * You can get distances, and recover full path.
- * Prerequisite: Leftist Heap(https://github.com/Pentagon03/Algorithms/blob/master/Data%20Structures/leftist_heap.cpp)
- * Repository: https://github.com/Pentagon03/Algorithms/blob/master/Graphs/k_shortest_walks.cpp
+ * Prerequisite: Leftist Heap(https://github.com/Pentagon03/Algorithms/blob/master/Data%20Structure/leftist_heap.cpp)
+ * Repository: https://github.com/Pentagon03/Algorithms/blob/master/Graph/k_shortest_walks.cpp
  * Test: https://judge.yosupo.jp/submission/244972
  * Test: https://www.acmicpc.net/source/share/ff1b64260b894885b6ed1503fc11c8a7
  * Reference: nor( https://judge.yosupo.jp/submission/87297 )

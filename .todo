@@ -1,0 +1,38 @@
+2024-12-22
+16:51-
+TODO:
+- default vertex 설명 추가
+- non-skip linkable 알고리즘
+    - 전역 변수로 옵션
+    - Graph 만들 때부터 O(N)으로 만들기
+- 최종 path에서 Vertex Fill -> Path Fill로 변경
+    - 간격이 있는 두 노드가 있으면 재귀적으로 한번 더 path 찾기
+    - calc_sum_chk 전역변수로 처리하도록
+    - qry_score sum을 최우선으로 하기.
+- 새로운 path를 기존 path에 끼워넣는다.
+    - (PafOutputData)에 bool 변수를 넣어서 true로 표시: `is_alt_path`
+2025-01-05
+10:00-
+DONE:
+- default vertex Appendix.md로 추가
+- is_in_alt_path를 is_alt_path로 변경
+- non-skip likable 알고리즘 구현함
+    - NON_SKIP_LINKABLE 변수
+    - if(NON_SKIP_LINKABLE)로 옵션 켰다가 끌 수 있음
+- 최종 path에서 Vertex Fill -> Path Fill로 변경
+    - 간격이 있는 두 노드가 있으면 재귀적으로 한번 더 path 찾기
+    - static thread_local
+    - qry_score sum을 최우선으로 하기.
+```cpp
+enum class PafDistanceCompareMode{
+    CALC_SUM_MODE,
+    QRY_SCORE_MODE,
+};
+/// Distance between Paf nodes
+struct PafDistance{
+    static thread_local PafDistanceCompareMode cmp_mode;
+```
+- 새로운 path를 기존 path에 끼워넣는다.
+    - (PafOutputData)에 bool 변수를 넣어서 true로 표시: `is_alt_path`
+TODO:
+- int64_t, int32_t 언젠가 갈아엎기
