@@ -2,3 +2,6 @@ cmake-*
 .idea
 .vscode
 build
+Archive
+*.paf
+log
