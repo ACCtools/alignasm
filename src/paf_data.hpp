@@ -6,8 +6,15 @@
 #include <vector>
 #include <string>
 #include <string_view>
+#include <iostream>
 
 constexpr bool NON_SKIP_LINKABLE = true;
+enum class UpgradeMode{
+    ALT_PATH,
+    SINGLE_PIECE,
+    NO_UPDATE,
+};
+constexpr UpgradeMode UPGRADE_MODE = UpgradeMode::ALT_PATH;
 
 constexpr int64_t QRY_WEIGHT = 1;
 constexpr int64_t REF_WEIGHT = 1;
@@ -81,8 +88,8 @@ struct PafOutputData {
     PafOutputData()
             : ctg_index(-1), edited_qry_str(0), edited_qry_end(0),
               edited_ref_str(0), edited_ref_end(0), is_alt_path(false) {}
-    void set_alt_path(){
-        is_alt_path = true;
+    void set_alt_path(bool res = true){
+        is_alt_path = res;
     }
     explicit PafOutputData(const PafReadData& readData):
             ctg_index(readData.ctg_index),
