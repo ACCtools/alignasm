@@ -7,6 +7,8 @@
 #include <string>
 #include <string_view>
 
+constexpr bool NON_SKIP_LINKABLE = true;
+
 constexpr int64_t QRY_WEIGHT = 1;
 constexpr int64_t REF_WEIGHT = 1;
 constexpr int64_t REF_NEGATIVE_PENALTY = 2;
@@ -17,7 +19,7 @@ constexpr int64_t SV_TRANS_PENALTY = 2000;
 constexpr int64_t SV_INV_PENALTY = 500;
 constexpr int64_t SV_FRONT_END_COEFFICIENT = 2;
 
-//constexpr int64_t QRY_END_INF =
+// constexpr int64_t QRY_END_INF =
 
 enum PafIndex {
     PAF_QRY_CHR,

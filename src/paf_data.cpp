@@ -371,7 +371,7 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
         bool is_one{true}; // is one idx (alone)
         int64_t qry_str{}, qry_end{};
         int64_t ref_str{}, ref_end{};
-        bool default_vertex{false}; // alone
+        bool default_vertex{false};
         Internal_Vertex() = default;
         void set_idx(int64_t idx){
             pre_idx = cur_idx = idx;

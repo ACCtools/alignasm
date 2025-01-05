@@ -1,6 +1,7 @@
 2024-12-22
 16:51-
 TODO:
+- default vertex 설명 추가
 - non-skip linkable 알고리즘
     - 전역 변수로 옵션
     - Graph 만들 때부터 O(N)으로 만들기
