@@ -11,6 +11,7 @@ if (CMAKE_BUILD_TYPE STREQUAL "Debug")
 endif()
 
 find_package(unordered_dense REQUIRED)
+find_package(TBB REQUIRED)
 
 FetchContent_Declare(
         csv
@@ -46,4 +47,4 @@ if (CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_link_libraries(alignasm gcov)
 endif()
 
-target_link_libraries(alignasm csv unordered_dense::unordered_dense argparse)
+target_link_libraries(alignasm csv unordered_dense::unordered_dense TBB::tbb argparse)

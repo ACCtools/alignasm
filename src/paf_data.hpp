@@ -8,7 +8,8 @@
 #include <string_view>
 #include <iostream>
 
-constexpr bool NON_SKIP_LINKABLE = true;
+extern bool NON_SKIP_LINKABLE;
+
 enum class UpgradeMode{
     ALT_PATH,
     SINGLE_PIECE,

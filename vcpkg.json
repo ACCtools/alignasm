@@ -8,5 +8,8 @@
   }, {
     "name" : "indicators",
     "version>=" : "2.3"
+  }, {
+    "name" : "tbb",
+    "version>=" : "2022.0.0"
   } ]
 }

@@ -17,6 +17,12 @@
 #include <charconv>
 #include <string_view>
 
+#ifdef NDEBUG
+#include <tbb/parallel_for.h>
+#include <tbb/task_arena.h>
+#endif
+
+bool NON_SKIP_LINKABLE;
 
 int32_t main(int argc, char** argv) {
     /** Test Session */
@@ -26,6 +32,12 @@ int32_t main(int argc, char** argv) {
             .help("Location of PAF file")
             .required()
             .nargs(1);
+
+    program.add_argument("-t", "--thread")
+            .help("Number of threads")
+            .default_value(1)
+            .scan<'d', int>()
+            .metavar("THREAD");
 
     program.add_argument("-a", "--alt")
             .help("Location of alternative PAF file")
@@ -37,6 +49,11 @@ int32_t main(int argc, char** argv) {
             .default_value(0.5)
             .scan<'f', double>()
             .metavar("ALT_BASELINE");
+
+    program.add_argument("--non_skip_linkable")
+            .help("Baseline for coverage of alternative PAF file")
+            .default_value(false)
+            .implicit_value(true);
 
     try {
         program.parse_args(argc, argv);
@@ -52,6 +69,8 @@ int32_t main(int argc, char** argv) {
         std::cerr << program;
         return 1;
     }
+
+    NON_SKIP_LINKABLE = program.get<bool>("--non_skip_linkable");
 
     /** CSV read */
     csv::CSVFormat format;
@@ -281,21 +300,57 @@ int32_t main(int argc, char** argv) {
     std::vector<std::vector<PafOutputData>> paf_out_data(paf_data.size()), paf_alt_out_data(paf_data.size());
     std::vector<std::vector<std::vector<PafOutputData>> > paf_max_out_datas(paf_data.size());
 
-    namespace id = indicators;
-    id::show_console_cursor(false);
-    id::ProgressBar bar{
+#ifdef NDEBUG
+    int num_thread = program.get<int>("--thread");
+    if (num_thread > 1) {
+        std::cout << "Analyze PAF " << paf_data.size() << " data in parallel" << std::endl;
+
+        tbb::task_arena arena(num_thread);
+        arena.execute([&paf_data, &paf_out_data, &paf_alt_out_data, &paf_max_out_datas] {
+            // tbb::this_task_arena::isolate([&] {
+                tbb::parallel_for(tbb::blocked_range<unsigned long>(0, paf_data.size()),
+                                  [&paf_data, &paf_out_data, &paf_alt_out_data, &paf_max_out_datas](const tbb::blocked_range<unsigned long>& range) {
+                                      for (auto i = range.begin(); i < range.end(); i++) {
+                                          solve_ctg_read(paf_data[i], paf_out_data[i], paf_alt_out_data[i], paf_max_out_datas[i]);
+                                      }
+                                  });
+            // });
+        });
+    } else {
+        namespace id = indicators;
+        id::show_console_cursor(false);
+        id::ProgressBar bar{
             id::option::BarWidth{50},
             id::option::MaxProgress{paf_data.size()},
             id::option::PrefixText{"Analyze PAF data "},
+        };
+
+
+        for (int32_t i = 0; i < paf_data.size(); i++) {
+            solve_ctg_read(paf_data[i], paf_out_data[i], paf_alt_out_data[i], paf_max_out_datas[i]);
+            bar.set_option(id::option::PostfixText{
+                std::to_string(i + 1) + "/" + std::to_string(paf_data.size())
+            });
+            bar.tick();
+        }
+    }
+#else
+    namespace id = indicators;
+    id::show_console_cursor(false);
+    id::ProgressBar bar{
+        id::option::BarWidth{50},
+        id::option::MaxProgress{paf_data.size()},
+        id::option::PrefixText{"Analyze PAF data "},
     };
 
     for (int32_t i = 0; i < paf_data.size(); i++) {
         solve_ctg_read(paf_data[i], paf_out_data[i], paf_alt_out_data[i], paf_max_out_datas[i]);
         bar.set_option(id::option::PostfixText{
-                std::to_string(i + 1) + "/" + std::to_string(paf_data.size())
+            std::to_string(i + 1) + "/" + std::to_string(paf_data.size())
         });
         bar.tick();
     }
+#endif
 
     auto process_output = [&](auto &paf_out_data_, const std::string &prefix = "") {
         /* Write Output */
@@ -328,6 +383,7 @@ int32_t main(int argc, char** argv) {
                                                     std::to_string(paf_edit_data.mat_num), // PAF_MAT_NUM
                                                     std::to_string(paf_edit_data.aln_len), // PAF_ALN_LEN
                                                     std::to_string(paf_data_line.map_qul), // PAF_MAT_QUL
+                                                    paf_line.is_alt_path ? "tp:A:S" : "tp:A:P", // PAF_IS_ALT
                                                     paf_edit_data.edit_cs_string}); // PAF_CS_STR
             }
         }
@@ -367,6 +423,7 @@ int32_t main(int argc, char** argv) {
                                                         std::to_string(paf_edit_data.mat_num), // PAF_MAT_NUM
                                                         std::to_string(paf_edit_data.aln_len), // PAF_ALN_LEN
                                                         std::to_string(paf_data_line.map_qul), // PAF_MAT_QUL
+                                                        paf_line.is_alt_path ? "tp:A:S" : "tp:A:P", // PAF_IS_ALT
                                                         paf_edit_data.edit_cs_string}); // PAF_CS_STR
                 }
             }
