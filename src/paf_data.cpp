@@ -737,7 +737,7 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
     auto upgrade_edge_path_with_alt_path = [&](const EdgePath &path) -> EdgePath{
         assert(path.size() >= 2);
         assert(get<0>(path.front()) == src);
-        assert(get<2>(path.back()) == dest);
+        assert(get<1>(path.back()) == dest);
         PafDistance::set_mode(PafDistanceCompareMode::QRY_SCORE_MODE);
         EdgePath edge_path{};
         for(auto it = path.begin(); it != path.end(); ++it){
@@ -1414,7 +1414,7 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
         }
         assert(path.size() >= 2);
         assert(get<0>(path.front()) == src);
-        assert(get<2>(path.back()) == dest);
+        assert(get<1>(path.back()) == dest);
         if(UPGRADE_MODE == UpgradeMode::ALT_PATH)
             path = upgrade_edge_path_with_alt_path(path);
         PafPath paf_path{};
