@@ -121,7 +121,8 @@ struct PafDistance{
     int64_t qry_score, ref_score;
     int64_t anom;
     int64_t qul_nonzero, qul_total;
-    explicit PafDistance(bool calc_sum_chk_, int64_t qry_score_ = 0, int64_t ref_score_ = 0,
+    PafDistance()=default;
+    explicit PafDistance(bool calc_sum_chk_ , int64_t qry_score_ = 0, int64_t ref_score_ = 0,
                          int64_t anom_ = 0, int64_t qul_nonzero_ = 0, int64_t qul_total_ = 0)
             : calc_sum_chk(calc_sum_chk_), qry_score(qry_score_), ref_score(ref_score_),
               anom(anom_), qul_nonzero(qul_nonzero_), qul_total(qul_total_){}

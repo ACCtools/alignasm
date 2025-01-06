@@ -678,9 +678,9 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
     }
 
     /// Actual SubSequence of Pafs that has good (score, anom)
-    kShortestWalksSolver sol(graph, PafDistance::max(), PafDistance(true), true, false);
+    kShortestWalksSolver k_walk_solver(graph, PafDistance::max(), PafDistance(true), true, false);
     const int64_t MAX_PATH_COUNT = 10000; // Maximum Paths to watch for shorter anom score paths
-    auto k_path_distances = sol.k_shortest_walks(src, dest, MAX_PATH_COUNT);
+    auto k_path_distances = k_walk_solver.k_shortest_walks(src, dest, MAX_PATH_COUNT);
 
     assert(not k_path_distances.empty());
 
@@ -689,8 +689,50 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
     // we deconstruct them with (x,x) or (x,y) and case work to make it a Path with {x} vertices.
     using EdgePath = std::vector<std::tuple<int64_t, int64_t, PafDistance>>;
     using PafPath = std::vector<PafOutputData>;
-    using IntMap = ankerl::unordered_dense::map <int64_t, bool>;
-    IntMap not_alt_vertex_map;
+    using IntBoolMap = ankerl::unordered_dense::map <int64_t, bool>;
+    IntBoolMap not_alt_vertex_map;
+
+    auto sorted_vertices = k_walk_solver.topology_sort(graph);
+    std::vector<int64_t> order;
+    assert(sorted_vertices.size() == vtx_n);
+    for(int64_t i = 0; i < vtx_n; i++)
+        order[sorted_vertices[i]] = i;
+
+
+    auto internal_shortest_path_recover = [&](Graph<PafDistance>& _graph, int64_t _src, int64_t _dest) -> EdgePath {
+        if(_src == _dest){
+            return EdgePath{};
+        }
+        // Use DAG Dp based approach
+        using IntIntMap = ankerl::unordered_dense::map <int64_t, int64_t>;
+        using IntPafDistanceMap = ankerl::unordered_dense::map<int64_t, PafDistance>;
+        IntIntMap pre_vertex;
+        IntPafDistanceMap dist;
+        dist[_src] = PafDistance(false); pre_vertex[_src] = -1;
+        auto order_src = order[_src], order_dest = order[_dest];
+        for(int64_t u = order_src; u < order_dest; u++){
+            if(not dist.contains(u)) continue;
+            auto curdist = dist[u];
+            for(auto [v, w]: _graph[u]){
+                auto nxtdist = curdist + w;
+                if(not dist.contains(v) or nxtdist < dist[v]){
+                    dist[v] = nxtdist;
+                    pre_vertex[v] = u;
+                }
+            }
+        }
+        EdgePath edge_path{};
+        assert(dist.contains(_dest));
+        auto last = _dest;
+        while(last != _src){
+            auto prev = pre_vertex[last];
+            edge_path.emplace_back(prev, last, dist[last] - dist[prev]);
+            last = prev;
+        }
+        std::reverse(edge_path.begin(), edge_path.end());
+        return edge_path;
+    };
+
 
     auto upgrade_edge_path_with_alt_path = [&](const EdgePath &path) -> EdgePath{
         assert(path.size() >= 2);
@@ -708,13 +750,8 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
                 assert(nit != path.end());
                 const auto&[nu, nv, nw] = *nit;
                 assert(v == nu); // chain
-                kShortestWalksSolver solver(graph,
-                                            PafDistance::max(),
-                                            PafDistance(false),
-                                            true,
-                                            false);
                 if(nv == dest){
-                    auto alt_path = solver.kth_shortest_walk_recover(src, v, 0, true);
+                    auto alt_path = internal_shortest_path_recover(graph, src, v);
                     if(alt_path.empty()){
                         edge_path.push_back(*it);
                     }else{
@@ -724,7 +761,7 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
                     auto [nx, ny] = index_to_vtx(nv);
                     if (nx == ny) {
                         assert(y != nx);
-                        auto alt_path = solver.kth_shortest_walk_recover(src, v, 0, true);
+                        auto alt_path = internal_shortest_path_recover(graph, src, v);
                         if(alt_path.empty()){
                             edge_path.push_back(*it);
                         }else {
@@ -732,7 +769,7 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
                         }
                     } else {
                         assert(y == nx and nx != ny);
-                        auto alt_path = solver.kth_shortest_walk_recover(src, nv, 0, true);
+                        auto alt_path = internal_shortest_path_recover(graph, src, nv);
                         if(alt_path.empty()){
                             edge_path.push_back(*it); edge_path.push_back(*nit);
                         }else{
@@ -745,12 +782,7 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
                 assert(u != src);
                 auto [x, y] = index_to_vtx(u);
                 assert(x>=0 and x < paf_ctg_data_sorted.size() and x == y);
-                kShortestWalksSolver solver(graph,
-                                            PafDistance::max(),
-                                            PafDistance(false),
-                                            true,
-                                            false);
-                auto alt_path = solver.kth_shortest_walk_recover(u, dest, 0, true);
+                auto alt_path = internal_shortest_path_recover(graph, u, dest);
                 if(alt_path.empty()){
                     edge_path.push_back(*it);
                 }else{
@@ -772,13 +804,8 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
                 assert(nit != path.end());
                 const auto&[nu, nv, nw] = *nit;
                 assert(v == nu); // chain
-                kShortestWalksSolver solver(graph,
-                                            PafDistance::max(),
-                                            PafDistance(false),
-                                            true,
-                                            false);
                 if(nv == dest){
-                    auto alt_path = solver.kth_shortest_walk_recover(u, v, 0, true);
+                    auto alt_path = internal_shortest_path_recover(graph, u, v);
                     if(alt_path.empty()){
                         edge_path.push_back(*it);
                     }else{
@@ -788,7 +815,7 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
                     auto [nx, ny] = index_to_vtx(nv);
                     if (nx == ny) {
                         assert(y != nx);
-                        auto alt_path = solver.kth_shortest_walk_recover(u, v, 0, true);
+                        auto alt_path = internal_shortest_path_recover(graph, u, v);
                         if(alt_path.empty()){
                             edge_path.push_back(*it);
                         }else {
@@ -796,7 +823,7 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
                         }
                     } else {
                         assert(y == nx and nx != ny);
-                        auto alt_path = solver.kth_shortest_walk_recover(u, nv, 0, true);
+                        auto alt_path = internal_shortest_path_recover(graph, u, nv);
                         if(alt_path.empty()){
                             edge_path.push_back(*it); edge_path.push_back(*nit);
                         }else{
@@ -1476,7 +1503,7 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
 
     /// Find EdgePath 1
     int64_t max_tot_coverage, tot_coverage;
-    auto path1 = sol.kth_shortest_walk_recover(src, dest, 0, false);
+    auto path1 = k_walk_solver.kth_shortest_walk_recover(src, dest, 0, false);
     auto paf_path1 = edge_path_to_paf_path(path1);
     max_tot_coverage = get_total_coverage(paf_path1);
 
@@ -1486,7 +1513,7 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
     {
         int64_t idx = 1;
         for(;idx<k_path_distances.size() && is_equal_paf_distance(min_distance, k_path_distances[idx]);idx++){
-            auto path_max = sol.kth_shortest_walk_recover(src, dest, idx, false);
+            auto path_max = k_walk_solver.kth_shortest_walk_recover(src, dest, idx, false);
             auto paf_path_max = edge_path_to_paf_path(path_max);
             tot_coverage = get_total_coverage(paf_path_max);
 
@@ -1519,13 +1546,13 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
                 ans_down = down;
                 ans_idx = i;
 
-                auto path2 = sol.kth_shortest_walk_recover(src, dest, ans_idx, false);
+                auto path2 = k_walk_solver.kth_shortest_walk_recover(src, dest, ans_idx, false);
                 auto paf_path2 = edge_path_to_paf_path(path2);
                 max_tot_coverage = get_total_coverage(paf_ctg_alt_out);
 
                 paf_ctg_alt_out = paf_path2;
             } else if (ans_idx != -1 and is_equal_paf_distance(k_path_distances[i], k_path_distances[ans_idx])) {
-                auto path2 = sol.kth_shortest_walk_recover(src, dest, i, false);
+                auto path2 = k_walk_solver.kth_shortest_walk_recover(src, dest, i, false);
                 auto paf_path2 = edge_path_to_paf_path(path2);
                 tot_coverage = get_total_coverage(paf_ctg_alt_out);
 

@@ -139,11 +139,12 @@ public:
         for(int64_t u = 0; u < n_; u++)
             if(not in_deg[u])
                 q.push(u);
-        std::vector<int64_t> order(n_);
-        for(auto &u : order){
+        std::vector<int64_t> sorted_vertices(n_);
+        for(auto &u : sorted_vertices){
             if(q.empty()) {
                 assert(0 && "Cycle occured in DAG");
-                return order;
+                sorted_vertices.clear();
+                return sorted_vertices;
             }
             u = q.front();
             q.pop();
@@ -151,7 +152,7 @@ public:
                 if(--in_deg[v] == 0)
                     q.push(v);
         }
-        return std::move(order);
+        return std::move(sorted_vertices);
     }
 
     // O(|E| + |V|), Solves DAG - shortest path problem
@@ -160,8 +161,8 @@ public:
         std::vector<Distance> d_(g_.size(), MAX_DISTANCE);
         std::vector<int64_t> prv(g_.size(), -1);
         d_[s] = IDENTITY_DISTANCE;
-        auto order = topology_sort(g_);
-        for(auto v: order){
+        auto sorted_vertices = topology_sort(g_);
+        for(auto v: sorted_vertices){
             if(d_[v] == MAX_DISTANCE) continue;
             for(auto &[to, w] : g_[v]){
                 if(d_[to] > d_[v] + w){
