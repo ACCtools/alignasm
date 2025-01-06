@@ -42,3 +42,7 @@ TODO:
 Done
 1. kShortestWalkSolver을 DAG DP로 교체
 2. Solver의 topology sort 결과는 그대로 가져옴.
+
+Possible 개선사항:
+- redundant한 int64_t를 int32_t로 변경
+- Shortest Path를 DAG Dp로 찾는 과정에서 unordered_dense map을 쓰는 대신 일반 vector로 연속한 구간을 담당
