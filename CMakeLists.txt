@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD 20)
 
 if (CMAKE_BUILD_TYPE STREQUAL "Debug")
     add_compile_options(-fprofile-arcs -ftest-coverage)
+    add_link_options(--coverage)
 endif()
 
 find_package(unordered_dense REQUIRED)
