@@ -693,7 +693,7 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
     IntBoolMap not_alt_vertex_map;
 
     auto sorted_vertices = k_walk_solver.topology_sort(graph);
-    std::vector<int64_t> order;
+    std::vector<int64_t> order(vtx_n);
     assert(sorted_vertices.size() == vtx_n);
     for(int64_t i = 0; i < vtx_n; i++)
         order[sorted_vertices[i]] = i;
@@ -710,10 +710,12 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
         IntPafDistanceMap dist;
         dist[_src] = PafDistance(false); pre_vertex[_src] = -1;
         auto order_src = order[_src], order_dest = order[_dest];
-        for(int64_t u = order_src; u < order_dest; u++){
+        for(int64_t i = order_src; i < order_dest; i++){
+            auto u = sorted_vertices[i];
             if(not dist.contains(u)) continue;
             auto curdist = dist[u];
             for(auto [v, w]: _graph[u]){
+                w.calc_sum_chk = false;
                 auto nxtdist = curdist + w;
                 if(not dist.contains(v) or nxtdist < dist[v]){
                     dist[v] = nxtdist;
