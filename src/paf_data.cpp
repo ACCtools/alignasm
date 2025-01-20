@@ -378,7 +378,7 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
         void set_idx(int64_t idx){
             pre_idx = cur_idx = idx;
         }
-        Internal_Vertex(int64_t i, int64_t j,
+        explicit Internal_Vertex(int64_t i, int64_t j,
                         const std::vector<std::vector<std::pair<int64_t, int64_t>>> &edited_loc,
         const std::vector<PafReadData> &paf_data)
         : pre_idx(i), cur_idx(j), is_one(i == j),
@@ -387,6 +387,16 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
             assert(0 <= i and i <= j and j < paf_data.size());
         }
     };
+    auto is_valid_internal_vertex_ij = [&](int64_t i, int64_t j) -> bool{
+        auto idx = vtx_to_index(i, j);
+        auto res = (0 <= idx and idx < vtx_of_index.size());
+        assert(res == (edited_loc_str[i][j] != FAIL_EDIT));
+        return res;
+    };
+    auto is_valid_internal_vertex = [&](const Internal_Vertex &IV) -> bool{
+        return is_valid_internal_vertex_ij(IV.pre_idx, IV.cur_idx);
+    };
+    // checks whether lft and rft are valid Internal Vertices, and they are connectable.
     auto linkable = [&](Internal_Vertex lft, Internal_Vertex rht) -> bool {
         assert(lft.default_vertex == rht.default_vertex);
         // we will just chk qrys, that's all
@@ -396,7 +406,7 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
 
         assert(lft.default_vertex);
         // not valid vertices
-        if (edited_loc_str[lft.pre_idx][lft.cur_idx] == FAIL_EDIT or edited_loc_str[rht.pre_idx][rht.cur_idx] == FAIL_EDIT)
+        if (not is_valid_internal_vertex(lft) or not is_valid_internal_vertex(rht))
             return false;
         if (not rht.is_one) {
             // (ij/jj) -> (jk)
@@ -532,6 +542,7 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
             int64_t max_qry_str = paf_ctg_data_sorted[r-1].qry_str;
             for (int64_t i = r-1; i >= l; i--) {
                 if(NON_SKIP_LINKABLE){
+                    // r-1 exists between i and dest
                     if(paf_ctg_data_sorted[i].qry_end < max_qry_str)
                         continue;
                 }
@@ -544,6 +555,14 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
 //                    anom += 1;
 //                }
                 add_edge(graph, vtx_to_index(i, i), dest, dist);
+                // (j, i) -> dest
+                for(int64_t j = i-1; j >= 0; j--){
+                    if(paf_ctg_data_sorted[j].qry_contains(paf_ctg_data_sorted[i])) continue;
+                    if(paf_ctg_data_sorted[j].qry_end >= paf_ctg_data_sorted[i].qry_str){
+                        if(is_valid_internal_vertex_ij(j, i))
+                            add_edge(graph, vtx_to_index(j, i), dest, dist);
+                    }
+                }
             }
         }
         // block: queries are overlapped in a chain
@@ -700,6 +719,7 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
 
 
     auto internal_shortest_path_recover = [&](Graph<PafDistance>& _graph, int64_t _src, int64_t _dest) -> EdgePath {
+        assert(PafDistance::cmp_mode == PafDistanceCompareMode::QRY_SCORE_MODE);
         if(_src == _dest){
             return EdgePath{};
         }
@@ -783,7 +803,8 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
             }else if(v == dest){
                 assert(u != src);
                 auto [x, y] = index_to_vtx(u);
-                assert(x>=0 and x < paf_ctg_data_sorted.size() and x == y);
+//                assert(x >= 0 and x < paf_ctg_data_sorted.size() and x == y);
+                assert(x >= 0 and x < paf_ctg_data_sorted.size());
                 auto alt_path = internal_shortest_path_recover(graph, u, dest);
                 if(alt_path.empty()){
                     edge_path.push_back(*it);

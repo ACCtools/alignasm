@@ -46,3 +46,7 @@ Done
 Possible 개선사항:
 - redundant한 int64_t를 int32_t로 변경
 - Shortest Path를 DAG Dp로 찾는 과정에서 unordered_dense map을 쓰는 대신 일반 vector로 연속한 구간을 담당
+
+2025-01-20
+1. make_graph에서 ii->dest 뿐만 아니라 ji -> dest 형태 추가.
+2. is_valid_internal_vertex 추가
