@@ -13,6 +13,7 @@ template<typename Dist_t>
 void add_edge(Graph<Dist_t> &graph, int64_t from, int64_t to, Dist_t dist){
     assert(0<=from and from<graph.size() and 0<=to and to<graph.size());
     graph[from].push_back({to, dist});
+//    std::cerr << from << " " << to << std::endl;
 }
 
 template<typename Dist_t>

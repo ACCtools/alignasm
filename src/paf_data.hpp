@@ -51,8 +51,8 @@ struct PafReadData {
     std::string cs_string;
     int32_t mat_num;
     int32_t aln_len;
-    std::vector<std::pair<int64_t, int64_t>> ref_overlap_range; // [l, r]
-    std::vector<std::pair<int64_t, int64_t>> qry_overlap_range; // [l, r]
+    std::vector<std::pair<int64_t, int64_t>> ref_overlap_range; // contains [l, r] ranges of reference locations, corresponding to qry_overlap_range
+    std::vector<std::pair<int64_t, int64_t>> qry_overlap_range; // contains [l, r] ranges of query     locations, corresponding to ref_overlap_range
     int64_t ref_total_length; // the maximum range of ref.
     int64_t qry_total_length; // the maximum range of qry.
     int64_t qry_str, qry_end; // [qry_str, qry_end]

@@ -281,7 +281,7 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
             if (pre.qry_end < cur.qry_str) break;
             assert(part_idx[i] == part_idx[j]);
             int64_t cur_len = (int64_t) cur.qry_overlap_range.size();
-            if (qry_partial_overlap(pre, cur)) { // anom_pre doesn't contain cur
+            if (qry_partial_overlap(pre, cur)) { // pre doesn't contain cur
                 bool determined = false;
                 int64_t min_gap = -1;
                 std::pair<int64_t, int64_t> min_gap_idx = {-1, -1};
@@ -290,7 +290,11 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
                 for (int64_t p_i = 0, p_j = 0; p_i < pre_len and p_j < cur_len;) {
                     const auto &[l_i, r_i] = pre.qry_overlap_range[p_i];
                     const auto &[l_j, r_j] = cur.qry_overlap_range[p_j];
-                    if (l_i == l_j) {
+//                    std::cerr << l_i << ' ' << r_i << '\n'
+//                              << l_j << ' ' << r_j << '\n';
+//                    std::cerr << "---------------------\n";
+
+                     if (l_i == l_j) {
                         if (l_j == r_j) {
                             p_j++;
                             continue;
