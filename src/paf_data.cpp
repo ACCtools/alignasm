@@ -594,7 +594,7 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
                                 add_edge(graph, vtx_to_index(i, i), vtx_to_index(j, j), get_score(IV_ii, IV_jj, true));
                             }
                         } else {
-                            // (i,i) -> (i, j) // doesn't get affected by NON_SKIP_LINKABLE
+                            // (i,i) -> (i, j) // doesn't std::get affected by NON_SKIP_LINKABLE
                             Internal_Vertex IV_ii(i, i, edited_loc_str, paf_ctg_data_sorted);
                             Internal_Vertex IV_ij(i, j, edited_loc_str, paf_ctg_data_sorted);
                             if (linkable(IV_ii, IV_ij)) {
@@ -614,7 +614,7 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
                                 if (linkable(IV_ij, IV_kk)) {
                                     add_edge(graph, vtx_to_index(i, j), vtx_to_index(k, k), get_score(IV_ij, IV_kk, true));
                                 }
-                                // doesn't get affected by NON_SKIP_LINKABLE
+                                // doesn't std::get affected by NON_SKIP_LINKABLE
                                 Internal_Vertex IV_jk(j, k, edited_loc_str, paf_ctg_data_sorted);
                                 if (linkable(IV_ij, IV_jk)) {
                                     add_edge(graph, vtx_to_index(i, j), vtx_to_index(j, k), get_score(IV_ij, IV_jk, true));
@@ -721,8 +721,9 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
     for(int64_t i = 0; i < vtx_n; i++)
         order[sorted_vertices[i]] = i;
 
-
-    auto internal_shortest_path_recover = [&](Graph<PafDistance>& _graph, int64_t _src, int64_t _dest) -> EdgePath {
+    // internal_shortest_path_recover returns Edgepath, when graph, src, dest is given.
+    // you can add whitelist_flag to force only (*, whitelist) form to be connected with _dest.
+    auto internal_shortest_path_recover = [&](Graph<PafDistance>& _graph, int64_t _src, int64_t _dest, bool whitelist_flag = false, int64_t whitelist = -1) -> EdgePath {
         assert(PafDistance::cmp_mode == PafDistanceCompareMode::QRY_SCORE_MODE);
         if(_src == _dest){
             return EdgePath{};
@@ -739,7 +740,13 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
             if(not dist.contains(u)) continue;
             auto curdist = dist[u];
             for(auto [v, w]: _graph[u]){
-                w.calc_sum_chk = false;
+                if(whitelist_flag and v == _dest){
+                    assert(0 <= whitelist and whitelist < paf_data_n);
+                    assert(u != src and u != dest); // global source and dest.
+                    auto [x, y] = index_to_vtx(u);
+                    if(y != whitelist) continue;
+                }
+                w.calc_sum_chk = false; // Just a hack to escape from assertion in PafDistance + operator
                 auto nxtdist = curdist + w;
                 if(not dist.contains(v) or nxtdist < dist[v]){
                     dist[v] = nxtdist;
@@ -759,11 +766,11 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
         return edge_path;
     };
 
-
+    // upgrade_edge_path_with_alt_path upgrades Edgepath by filling gaps with query-maximizing paths.
     auto upgrade_edge_path_with_alt_path = [&](const EdgePath &path) -> EdgePath{
         assert(path.size() >= 2);
-        assert(get<0>(path.front()) == src);
-        assert(get<1>(path.back()) == dest);
+        assert(std::get<0>(path.front()) == src);
+        assert(std::get<1>(path.back()) == dest);
         PafDistance::set_mode(PafDistanceCompareMode::QRY_SCORE_MODE);
         EdgePath edge_path{};
         for(auto it = path.begin(); it != path.end(); ++it){
@@ -771,31 +778,36 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
             if(u == src){
                 assert(v != dest);
                 auto [x, y] = index_to_vtx(v);
-                assert(x>=0 and x < paf_ctg_data_sorted.size() and x == y);
+                assert(x >= 0 and x < paf_ctg_data_sorted.size() and x == y); // trivial, u == src
                 auto nit = std::next(it);
                 assert(nit != path.end());
                 const auto&[nu, nv, nw] = *nit;
                 assert(v == nu); // chain
                 if(nv == dest){
-                    auto alt_path = internal_shortest_path_recover(graph, src, v);
+                    // u --w--> v --nw--> nv
+                    auto alt_path = internal_shortest_path_recover(graph, u, nv, true, y);
                     if(alt_path.empty()){
                         edge_path.push_back(*it);
                     }else{
+                        assert(std::get<1>(alt_path.back()) == dest);
+                        alt_path.pop_back(); // dest out.
                         edge_path.insert(edge_path.end(), alt_path.begin(), alt_path.end());
                     }
-                }else {
+                }else{
                     auto [nx, ny] = index_to_vtx(nv);
                     if (nx == ny) {
                         assert(y != nx);
-                        auto alt_path = internal_shortest_path_recover(graph, src, v);
-                        if(alt_path.empty()){
+                        auto alt_path = internal_shortest_path_recover(graph, u, nv, true, y);
+                        if(alt_path.empty()) {
                             edge_path.push_back(*it);
                         }else {
+                            assert(std::get<1>(alt_path.back()) == nv);
+                            alt_path.pop_back();
                             edge_path.insert(edge_path.end(), alt_path.begin(), alt_path.end());
                         }
                     } else {
                         assert(y == nx and nx != ny);
-                        auto alt_path = internal_shortest_path_recover(graph, src, nv);
+                        auto alt_path = internal_shortest_path_recover(graph, u, nv);
                         if(alt_path.empty()){
                             edge_path.push_back(*it); edge_path.push_back(*nit);
                         }else{
@@ -807,19 +819,21 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
             }else if(v == dest){
                 assert(u != src);
                 auto [x, y] = index_to_vtx(u);
-//                assert(x >= 0 and x < paf_ctg_data_sorted.size() and x == y);
-                assert(x >= 0 and x < paf_ctg_data_sorted.size());
-                auto alt_path = internal_shortest_path_recover(graph, u, dest);
+                assert(x >= 0 and x < paf_data_n and y >= 0 and y < paf_data_n);
+                auto alt_path = internal_shortest_path_recover(graph, u, v);
                 if(alt_path.empty()){
                     edge_path.push_back(*it);
                 }else{
                     edge_path.insert(edge_path.end(), alt_path.begin(), alt_path.end());
                 }
             }else{
-                auto [px, py] = index_to_vtx(u);
+                assert(not edge_path.empty());
+//                auto [px, py] = index_to_vtx(u);
+                auto uu = std::get<1>(edge_path.back());
+                auto [px, py] = index_to_vtx(uu);
                 auto [x, y] = index_to_vtx(v);
                 if(x != y){
-                    assert(px != py); // all px == py ones are gone
+                    assert(px != py and py == x); // all px == py == x , x != y ones are (will be) passed by iteration. No gaps are between them!
                     assert(not edge_path.empty());
                     auto[pu, pv, pw] = edge_path.back();
                     assert(pv == u);
@@ -832,20 +846,24 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
                 const auto&[nu, nv, nw] = *nit;
                 assert(v == nu); // chain
                 if(nv == dest){
-                    auto alt_path = internal_shortest_path_recover(graph, u, v);
+                    auto alt_path = internal_shortest_path_recover(graph, u, nv, true, y);
                     if(alt_path.empty()){
                         edge_path.push_back(*it);
                     }else{
+                        assert(std::get<1>(alt_path.back()) == nv);
+                        alt_path.pop_back();
                         edge_path.insert(edge_path.end(), alt_path.begin(), alt_path.end());
                     }
                 }else {
                     auto [nx, ny] = index_to_vtx(nv);
                     if (nx == ny) {
                         assert(y != nx);
-                        auto alt_path = internal_shortest_path_recover(graph, u, v);
+                        auto alt_path = internal_shortest_path_recover(graph, u, nv, true, y);
                         if(alt_path.empty()){
                             edge_path.push_back(*it);
                         }else {
+                            assert(std::get<1>(alt_path.back()) == nv);
+                            alt_path.pop_back();
                             edge_path.insert(edge_path.end(), alt_path.begin(), alt_path.end());
                         }
                     } else {
@@ -1440,8 +1458,8 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
             }
         }
         assert(path.size() >= 2);
-        assert(get<0>(path.front()) == src);
-        assert(get<1>(path.back()) == dest);
+        assert(std::get<0>(path.front()) == src);
+        assert(std::get<1>(path.back()) == dest);
         if(UPGRADE_MODE == UpgradeMode::ALT_PATH)
             path = upgrade_edge_path_with_alt_path(path);
         PafPath paf_path{};

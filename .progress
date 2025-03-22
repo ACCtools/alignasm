@@ -3,6 +3,7 @@
 TODO:
 - default vertex 설명 추가
 - non-skip linkable 알고리즘
+    - linkable을 연결할 때 그 사이에 한 개가 full로 있으면 그걸 연결하지 않기
     - 전역 변수로 옵션
     - Graph 만들 때부터 O(N)으로 만들기
 - 최종 path에서 Vertex Fill -> Path Fill로 변경
