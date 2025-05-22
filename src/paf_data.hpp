@@ -28,6 +28,9 @@ constexpr int64_t SV_INV_PENALTY = 500;
 constexpr int64_t SV_FRONT_END_COEFFICIENT = 2;
 
 // constexpr int64_t QRY_END_INF =
+constexpr int32_t TYPE_MAIN = 0;
+constexpr int32_t TYPE_ALT = 1;
+
 
 enum PafIndex {
     PAF_QRY_CHR,
@@ -60,6 +63,8 @@ struct PafReadData {
     int32_t ref_chr; // reference id
     uint8_t map_qul; // map quality
     bool aln_fwd;
+    std::pair<int32_t, int32_t> original_cord;
+    
     bool operator <(const PafReadData& rht) const{
         if(qry_str != rht.qry_str)
             return qry_str < rht.qry_str;

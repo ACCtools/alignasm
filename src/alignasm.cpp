@@ -95,7 +95,8 @@ int32_t main(int argc, char** argv) {
     std::vector<PafReadData> ctg_data_vector;
     std::vector<std::string> ctg_name_vector;
     std::string ctg_chr;
-    for (int32_t ctg_index = 0, paf_index = 0; csv::CSVRow& read : reader) {
+
+    for (int32_t ctg_index = 0, paf_index = 0, row_global_index = 0; csv::CSVRow& read : reader) {
         std::string qry_chr, ref_chr;
         ref_chr = read[PAF_REF_CHR].get<std::string>();
         qry_chr = read[PAF_QRY_CHR].get<std::string>();
@@ -153,8 +154,12 @@ int32_t main(int argc, char** argv) {
         paf_read_data.cs_string = read[read.size() - 1].get<std::string_view>();
         paf_read_data.mat_num = read[PAF_MAT_NUM].get<int32_t>();
         paf_read_data.aln_len = read[PAF_ALN_LEN].get<int32_t>();
+        paf_read_data.original_cord = {TYPE_MAIN, row_global_index};
+
         get_overlap_range(paf_read_data, read[read.size() - 1].get<std::string_view>());
         ctg_data_vector.push_back(paf_read_data);
+
+        row_global_index++;
     }
 
     ctg_name_vector.push_back(ctg_chr);
@@ -211,7 +216,7 @@ int32_t main(int argc, char** argv) {
         PafReadData ratio_max_paf_data{};
 
         ctg_chr.clear();
-        for (csv::CSVRow& read : alt_reader) {
+        for (int32_t row_global_index = 0; csv::CSVRow& read : alt_reader) {
             std::string qry_chr, ref_chr;
             ref_chr = read[PAF_REF_CHR].get<std::string>();
             qry_chr = read[PAF_QRY_CHR].get<std::string>();
@@ -254,6 +259,7 @@ int32_t main(int argc, char** argv) {
             paf_read_data.cs_string = read[read.size() - 1].get<std::string_view>();
             paf_read_data.mat_num = read[PAF_MAT_NUM].get<int32_t>();
             paf_read_data.aln_len = read[PAF_ALN_LEN].get<int32_t>();
+            paf_read_data.original_cord = {TYPE_ALT, row_global_index};
             get_overlap_range(paf_read_data, read[read.size() - 1].get<std::string_view>());
 
             if (tar_qry_offset == -1) {
@@ -285,6 +291,8 @@ int32_t main(int argc, char** argv) {
                 paf_data[paf_map[real_qry_chr]].push_back(paf_read_data);
                 tar_flag = true;
             }
+
+            row_global_index++;
         }
     }
 
@@ -344,6 +352,7 @@ int32_t main(int argc, char** argv) {
     };
 
     for (int32_t i = 0; i < paf_data.size(); i++) {
+        std::cout << ctg_name_vector[i] << std::endl;
         solve_ctg_read(paf_data[i], paf_out_data[i], paf_alt_out_data[i], paf_max_out_datas[i]);
         bar.set_option(id::option::PostfixText{
             std::to_string(i + 1) + "/" + std::to_string(paf_data.size())
@@ -351,6 +360,14 @@ int32_t main(int argc, char** argv) {
         bar.tick();
     }
 #endif
+    auto cord_to_index_string = [](auto& paf_data_line) {
+        auto cord = paf_data_line.original_cord;
+
+        std::string ans = "xi:A:";
+        ans += cord.first == TYPE_MAIN ? "P_" : "A_";
+        ans += std::to_string(cord.second);
+        return ans;
+    };
 
     auto process_output = [&](auto &paf_out_data_, const std::string &prefix = "") {
         /* Write Output */
@@ -384,6 +401,7 @@ int32_t main(int argc, char** argv) {
                                                     std::to_string(paf_edit_data.aln_len), // PAF_ALN_LEN
                                                     std::to_string(paf_data_line.map_qul), // PAF_MAT_QUL
                                                     paf_line.is_alt_path ? "tp:A:S" : "tp:A:P", // PAF_IS_ALT
+                                                    cord_to_index_string(paf_data_line), // GLOBAL_CORD_STR
                                                     paf_edit_data.edit_cs_string}); // PAF_CS_STR
             }
         }
@@ -424,6 +442,7 @@ int32_t main(int argc, char** argv) {
                                                         std::to_string(paf_edit_data.aln_len), // PAF_ALN_LEN
                                                         std::to_string(paf_data_line.map_qul), // PAF_MAT_QUL
                                                         paf_line.is_alt_path ? "tp:A:S" : "tp:A:P", // PAF_IS_ALT
+                                                        cord_to_index_string(paf_data_line), // GLOBAL_CORD_STR
                                                         paf_edit_data.edit_cs_string}); // PAF_CS_STR
                 }
             }
