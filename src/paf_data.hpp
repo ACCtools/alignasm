@@ -8,7 +8,6 @@
 #include <string_view>
 #include <iostream>
 
-// This is a flag that, if this is set as true, there is no edge such a -> b, when a -> c -> b exists.
 extern bool NON_SKIP_LINKABLE;
 
 enum class UpgradeMode{

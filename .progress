@@ -51,6 +51,3 @@ Possible 개선사항:
 2025-01-20
 1. make_graph에서 ii->dest 뿐만 아니라 ji -> dest 형태 추가.
 2. is_valid_internal_vertex 추가
-
-2025-06-02
-Linkable 뜻은 a -> b 연결할 때 a -> x -> b 일케 x 있으면 a랑 b를 그래프 상에서 연결 안하는걸 말함.
