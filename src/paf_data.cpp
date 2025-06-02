@@ -742,7 +742,8 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
             for(auto [v, w]: _graph[u]){
                 if(whitelist_flag and v == _dest){
                     assert(0 <= whitelist and whitelist < paf_data_n);
-                    assert(u != src and u != dest); // global source and dest.
+                    if(u == src or u == dest) // When NON_SKIP_LINKABLE is false, u == src is possible.
+                        continue;
                     auto [x, y] = index_to_vtx(u);
                     if(y != whitelist) continue;
                 }
@@ -775,10 +776,11 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
         EdgePath edge_path{};
         for(auto it = path.begin(); it != path.end(); ++it){
             const auto&[u, v, w] = *it;
+            // we are going to fill (u,v) edge with a path
             if(u == src){
                 assert(v != dest);
                 auto [x, y] = index_to_vtx(v);
-                assert(x >= 0 and x < paf_ctg_data_sorted.size() and x == y); // trivial, u == src
+                assert(x == y and x >= 0 and x < paf_ctg_data_sorted.size()); // trivial, u == src
                 auto nit = std::next(it);
                 assert(nit != path.end());
                 const auto&[nu, nv, nw] = *nit;
@@ -807,7 +809,7 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
                         }
                     } else {
                         assert(y == nx and nx != ny);
-                        auto alt_path = internal_shortest_path_recover(graph, u, nv);
+                        auto alt_path = internal_shortest_path_recover(graph, u, nv, false);
                         if(alt_path.empty()){
                             edge_path.push_back(*it); edge_path.push_back(*nit);
                         }else{
@@ -820,7 +822,7 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
                 assert(u != src);
                 auto [x, y] = index_to_vtx(u);
                 assert(x >= 0 and x < paf_data_n and y >= 0 and y < paf_data_n);
-                auto alt_path = internal_shortest_path_recover(graph, u, v);
+                auto alt_path = internal_shortest_path_recover(graph, u, v, false);
                 if(alt_path.empty()){
                     edge_path.push_back(*it);
                 }else{
@@ -868,7 +870,7 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
                         }
                     } else {
                         assert(y == nx and nx != ny);
-                        auto alt_path = internal_shortest_path_recover(graph, u, nv);
+                        auto alt_path = internal_shortest_path_recover(graph, u, nv, false);
                         if(alt_path.empty()){
                             edge_path.push_back(*it); edge_path.push_back(*nit);
                         }else{
