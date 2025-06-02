@@ -742,9 +742,8 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
             for(auto [v, w]: _graph[u]){
                 if(whitelist_flag and v == _dest){
                     assert(0 <= whitelist and whitelist < paf_data_n);
-                    if(u == src or u == dest){ // NON_SKIP_LINKABLE
+                    if(u == src or u == dest) // When NON_SKIP_LINKABLE is false, u == src is possible.
                         continue;
-                    }
                     auto [x, y] = index_to_vtx(u);
                     if(y != whitelist) continue;
                 }
