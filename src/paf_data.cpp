@@ -721,8 +721,8 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
     for(int64_t i = 0; i < vtx_n; i++)
         order[sorted_vertices[i]] = i;
 
-    // internal_shortest_path_recover returns Edgepath, when graph, src, dest is given.
-    // you can add whitelist_flag to force only (*, whitelist) form to be connected with _dest.
+    // internal_shortest_path_recover returns Edgepath, when graph, _src, _dest is given.
+    // you can add whitelist_flag to force the last edge will be  (*, whitelist) -> _dest.
     auto internal_shortest_path_recover = [&](Graph<PafDistance>& _graph, int64_t _src, int64_t _dest, bool whitelist_flag = false, int64_t whitelist = -1) -> EdgePath {
         assert(PafDistance::cmp_mode == PafDistanceCompareMode::QRY_SCORE_MODE);
         if(_src == _dest){
