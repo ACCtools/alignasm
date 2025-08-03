@@ -684,9 +684,9 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
             add_edge<int64_t>(anom_graph, cur, nxt, dist.anom);
         }
     }
-    constexpr int64_t MAX_ANOM = 2;
+    constexpr int64_t MAX_ANOM = 1; // ANOM is always 0 or 1
     std::vector<int64_t> anom_dis, anom_pre;
-    k_weighted_bfs(anom_graph, src, MAX_ANOM, anom_dis, anom_pre);
+    k_weighted_bfs(anom_graph, src, MAX_ANOM + 1, anom_dis, anom_pre);
 
     assert(anom_dis[dest] != -1);
     {
