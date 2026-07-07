@@ -63,6 +63,7 @@ struct PafReadData {
     int64_t ref_str, ref_end; // [ref_str, ref_end]
     int32_t ref_chr; // reference id
     uint8_t map_qul; // map quality
+    bool priority_ref;
     bool aln_fwd;
     std::pair<int32_t, int32_t> original_cord;
     

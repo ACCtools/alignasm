@@ -3,5 +3,6 @@ cmake-*
 .vscode
 build
 Archive
+vcpkg
 *.paf
 *.log
