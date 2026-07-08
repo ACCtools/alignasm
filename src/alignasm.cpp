@@ -9,7 +9,6 @@
 #include <indicators/cursor_control.hpp>
 
 #include <iostream>
-#include <fstream>
 #include <cinttypes>
 #include <string>
 #include <utility>
@@ -25,24 +24,6 @@
 #endif
 
 bool NON_SKIP_LINKABLE;
-
-namespace {
-    bool is_empty_regular_file(const std::filesystem::path &path) {
-        std::error_code ec;
-        if (!std::filesystem::exists(path, ec) || ec) return false;
-        if (!std::filesystem::is_regular_file(path, ec) || ec) return false;
-        auto size = std::filesystem::file_size(path, ec);
-        return !ec && size == 0;
-    }
-
-    void write_empty_output_pafs(const std::filesystem::path &paf_loc) {
-        for (const std::string &prefix: {"", ".alt", ".all"}) {
-            auto out_path = std::filesystem::absolute(paf_loc);
-            out_path.replace_extension(".aln" + prefix + ".paf");
-            std::ofstream out(out_path);
-        }
-    }
-}
 
 int32_t main(int argc, char** argv) {
     /** Test Session */
@@ -75,11 +56,6 @@ int32_t main(int argc, char** argv) {
             .default_value(false)
             .implicit_value(true);
 
-    program.add_argument("--priority_ref")
-            .help("Reference name whose query intervals should be reserved before graph search")
-            .default_value(std::string{})
-            .metavar("REF_NAME");
-
     try {
         program.parse_args(argc, argv);
     }
@@ -94,14 +70,8 @@ int32_t main(int argc, char** argv) {
         std::cerr << program;
         return 1;
     }
-    if (is_empty_regular_file(paf_loc)) {
-        write_empty_output_pafs(paf_loc);
-        std::cout << "Input PAF is empty; wrote empty output PAF files" << std::endl;
-        return 0;
-    }
 
     NON_SKIP_LINKABLE = program.get<bool>("--non_skip_linkable");
-    const std::string priority_ref = program.get<std::string>("--priority_ref");
 
     /** CSV read */
     csv::CSVFormat format;
@@ -171,7 +141,6 @@ int32_t main(int argc, char** argv) {
         assert(paf_read_data.ref_str <= paf_read_data.ref_end); // start <= end
 
         paf_read_data.ref_chr = chr_map[ref_chr];
-        paf_read_data.priority_ref = not priority_ref.empty() and ref_chr == priority_ref;
 
         paf_read_data.aln_fwd = read[PAF_ALN_FWD].get<std::string>()[0] == '+';
         if(not paf_read_data.aln_fwd) {
@@ -200,22 +169,15 @@ int32_t main(int argc, char** argv) {
     assert(not ctg_data_vector.empty() and "data should not be empty");
 
 
-    bool use_alt = program.is_used("--alt");
-    std::filesystem::path paf_alt_loc {};
-    if (use_alt) {
-        paf_alt_loc = std::filesystem::path {program.get<std::string>("--alt")};
+    if (program.is_used("--alt")) {
+        double ALT_BASELINE = program.get<double>("--alt_baseline");
+
+        std::filesystem::path paf_alt_loc {program.get<std::string>("--alt")};
         if (paf_alt_loc.extension() != ".paf") {
-            std::cerr << "Wrong PAF file : " << std::filesystem::absolute(paf_alt_loc);
+            std::cerr << "Wrong PAF file : " << std::filesystem::absolute(paf_loc);
             std::cerr << program;
             return 1;
         }
-        if (is_empty_regular_file(paf_alt_loc)) {
-            use_alt = false;
-        }
-    }
-
-    if (use_alt) {
-        double ALT_BASELINE = program.get<double>("--alt_baseline");
 
         filename = std::filesystem::absolute(paf_alt_loc);
         csv::CSVReader alt_reader(filename, format);
@@ -285,7 +247,6 @@ int32_t main(int argc, char** argv) {
             assert(paf_read_data.ref_str <= paf_read_data.ref_end); // start <= end
 
             paf_read_data.ref_chr = chr_map[ref_chr];
-            paf_read_data.priority_ref = not priority_ref.empty() and ref_chr == priority_ref;
 
             paf_read_data.aln_fwd = read[PAF_ALN_FWD].get<std::string>()[0] == '+';
             if(not paf_read_data.aln_fwd) {

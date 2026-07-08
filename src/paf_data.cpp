@@ -5,252 +5,11 @@
 #include "k_weighted_bfs.hpp"
 #include "priority_queue_vector.hpp"
 
-#include <algorithm>
 #include <charconv>
 #include <limits>
 #include <ankerl/unordered_dense.h>
 
 thread_local PafDistanceCompareMode PafDistance::cmp_mode = PafDistanceCompareMode::CALC_SUM_MODE;
-
-namespace {
-    using QueryInterval = std::pair<int64_t, int64_t>;
-
-    std::vector<QueryInterval> merge_query_intervals(std::vector<QueryInterval> intervals) {
-        if (intervals.empty()) return {};
-        std::sort(intervals.begin(), intervals.end());
-
-        std::vector<QueryInterval> merged;
-        merged.push_back(intervals.front());
-        for (const auto &[l, r]: intervals) {
-            auto &[ml, mr] = merged.back();
-            if (l <= mr + 1) {
-                mr = std::max(mr, r);
-            } else {
-                merged.emplace_back(l, r);
-            }
-        }
-        return merged;
-    }
-
-    int64_t ref_at_query(const PafReadData &data, int64_t range_idx, int64_t query_pos) {
-        const auto &[qry_l, qry_r] = data.qry_overlap_range[range_idx];
-        assert(qry_l <= query_pos and query_pos <= qry_r);
-        int64_t ref_step = data.aln_fwd ? 1 : -1;
-        return data.ref_overlap_range[range_idx].first + (query_pos - qry_l) * ref_step;
-    }
-
-    bool make_clipped_output(const PafReadData &data, int64_t clip_l, int64_t clip_r, PafOutputData &out) {
-        clip_l = std::max(clip_l, data.qry_str);
-        clip_r = std::min(clip_r, data.qry_end);
-        if (clip_l > clip_r) return false;
-
-        int64_t out_l = -1, out_r = -1;
-        int64_t out_l_idx = -1, out_r_idx = -1;
-        for (int64_t idx = 0; idx < (int64_t)data.qry_overlap_range.size(); idx++) {
-            const auto &[qry_l, qry_r] = data.qry_overlap_range[idx];
-            auto ov_l = std::max(clip_l, qry_l);
-            auto ov_r = std::min(clip_r, qry_r);
-            if (ov_l > ov_r) continue;
-            if (out_l == -1) {
-                out_l = ov_l;
-                out_l_idx = idx;
-            }
-            out_r = ov_r;
-            out_r_idx = idx;
-        }
-        if (out_l == -1) return false;
-
-        out = PafOutputData(data);
-        out.edited_qry_str = out_l;
-        out.edited_qry_end = out_r;
-        out.edited_ref_str = ref_at_query(data, out_l_idx, out_l);
-        out.edited_ref_end = ref_at_query(data, out_r_idx, out_r);
-        out.set_alt_path(data.original_cord.first == TYPE_ALT);
-        return true;
-    }
-
-    bool make_clipped_read(const PafReadData &data, int64_t clip_l, int64_t clip_r, PafReadData &out) {
-        PafOutputData clipped;
-        if (not make_clipped_output(data, clip_l, clip_r, clipped)) return false;
-
-        out = data;
-        out.qry_str = clipped.edited_qry_str;
-        out.qry_end = clipped.edited_qry_end;
-        out.ref_str = clipped.edited_ref_str;
-        out.ref_end = clipped.edited_ref_end;
-        out.priority_ref = false;
-        out.qry_overlap_range.clear();
-        out.ref_overlap_range.clear();
-
-        int64_t ref_step = data.aln_fwd ? 1 : -1;
-        for (int64_t idx = 0; idx < (int64_t)data.qry_overlap_range.size(); idx++) {
-            const auto &[qry_l, qry_r] = data.qry_overlap_range[idx];
-            auto ov_l = std::max(out.qry_str, qry_l);
-            auto ov_r = std::min(out.qry_end, qry_r);
-            if (ov_l > ov_r) continue;
-            out.qry_overlap_range.emplace_back(ov_l, ov_r);
-            out.ref_overlap_range.emplace_back(
-                    data.ref_overlap_range[idx].first + (ov_l - qry_l) * ref_step,
-                    data.ref_overlap_range[idx].first + (ov_r - qry_l) * ref_step);
-        }
-        return not out.qry_overlap_range.empty();
-    }
-
-    std::vector<QueryInterval> complement_query_intervals(
-            const std::vector<QueryInterval> &reserved, int64_t query_l, int64_t query_r) {
-        std::vector<QueryInterval> complement;
-        int64_t pos = query_l;
-        for (const auto &[l, r]: reserved) {
-            if (pos < l) complement.emplace_back(pos, l - 1);
-            if (r == std::numeric_limits<int64_t>::max()) return complement;
-            pos = std::max(pos, r + 1);
-        }
-        if (pos <= query_r) complement.emplace_back(pos, query_r);
-        return complement;
-    }
-
-    void remap_output_indices(std::vector<PafOutputData> &outputs, const std::vector<int32_t> &index_map) {
-        for (auto &out: outputs) {
-            assert(0 <= out.ctg_index and out.ctg_index < index_map.size());
-            out.ctg_index = index_map[out.ctg_index];
-        }
-    }
-
-    bool output_sort_less(const PafOutputData &lft, const PafOutputData &rht) {
-        if (lft.edited_qry_str != rht.edited_qry_str)
-            return lft.edited_qry_str < rht.edited_qry_str;
-        if (lft.edited_qry_end != rht.edited_qry_end)
-            return lft.edited_qry_end < rht.edited_qry_end;
-        if (lft.ctg_index != rht.ctg_index)
-            return lft.ctg_index < rht.ctg_index;
-        return lft.is_alt_path < rht.is_alt_path;
-    }
-
-    bool better_priority_candidate(
-            const PafOutputData &cand, int32_t cand_idx,
-            const PafOutputData &best, int32_t best_idx,
-            const std::vector<PafReadData> &data) {
-        if (cand.edited_qry_end != best.edited_qry_end)
-            return cand.edited_qry_end > best.edited_qry_end;
-        auto cand_mapq = (int32_t)data[cand_idx].map_qul;
-        auto best_mapq = (int32_t)data[best_idx].map_qul;
-        if (cand_mapq != best_mapq) return cand_mapq > best_mapq;
-        auto cand_len = cand.edited_qry_end - cand.edited_qry_str;
-        auto best_len = best.edited_qry_end - best.edited_qry_str;
-        if (cand_len != best_len) return cand_len > best_len;
-        return cand_idx < best_idx;
-    }
-
-    std::vector<PafOutputData> build_priority_outputs(
-            const std::vector<PafReadData> &data,
-            const std::vector<int32_t> &priority_indices,
-            const std::vector<QueryInterval> &reserved) {
-        std::vector<PafOutputData> outputs;
-        for (const auto &[interval_l, interval_r]: reserved) {
-            int64_t pos = interval_l;
-            while (pos <= interval_r) {
-                bool found_covering = false;
-                bool found_future = false;
-                int64_t next_pos = interval_r + 1;
-                PafOutputData best;
-                int32_t best_idx = -1;
-
-                for (auto original_idx: priority_indices) {
-                    PafOutputData cand;
-                    if (not make_clipped_output(data[original_idx], pos, interval_r, cand)) continue;
-                    cand.ctg_index = original_idx;
-                    cand.set_alt_path(data[original_idx].original_cord.first == TYPE_ALT);
-                    if (cand.edited_qry_str > pos) {
-                        found_future = true;
-                        next_pos = std::min(next_pos, cand.edited_qry_str);
-                        continue;
-                    }
-                    if (not found_covering or better_priority_candidate(cand, original_idx, best, best_idx, data)) {
-                        best = cand;
-                        best_idx = original_idx;
-                        found_covering = true;
-                    }
-                }
-
-                if (found_covering) {
-                    outputs.push_back(best);
-                    pos = best.edited_qry_end + 1;
-                } else if (found_future and next_pos <= interval_r) {
-                    pos = next_pos;
-                } else {
-                    break;
-                }
-            }
-        }
-        return outputs;
-    }
-}
-
-static void solve_ctg_read_core(std::vector<PafReadData> &paf_ctg_data_original, std::vector<PafOutputData> &paf_ctg_out, std::vector<PafOutputData> &paf_ctg_alt_out, std::vector<std::vector<PafOutputData>> &paf_ctg_max_out);
-
-void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector<PafOutputData> &paf_ctg_out, std::vector<PafOutputData> &paf_ctg_alt_out, std::vector<std::vector<PafOutputData>> &paf_ctg_max_out) {
-    paf_ctg_out.clear();
-    paf_ctg_alt_out.clear();
-    paf_ctg_max_out.clear();
-
-    std::vector<int32_t> priority_indices;
-    std::vector<int32_t> normal_indices;
-    for (int32_t idx = 0; idx < (int32_t)paf_ctg_data_original.size(); idx++) {
-        if (paf_ctg_data_original[idx].priority_ref) {
-            priority_indices.push_back(idx);
-        } else {
-            normal_indices.push_back(idx);
-        }
-    }
-
-    if (priority_indices.empty()) {
-        solve_ctg_read_core(paf_ctg_data_original, paf_ctg_out, paf_ctg_alt_out, paf_ctg_max_out);
-        return;
-    }
-
-    std::vector<QueryInterval> reserved;
-    reserved.reserve(priority_indices.size());
-    for (auto idx: priority_indices) {
-        reserved.emplace_back(paf_ctg_data_original[idx].qry_str, paf_ctg_data_original[idx].qry_end);
-    }
-    reserved = merge_query_intervals(std::move(reserved));
-
-    std::vector<PafOutputData> final_outputs = build_priority_outputs(
-            paf_ctg_data_original, priority_indices, reserved);
-
-    assert(not paf_ctg_data_original.empty());
-    int64_t query_l = 0;
-    int64_t query_r = paf_ctg_data_original.front().qry_total_length - 1;
-    auto complement = complement_query_intervals(reserved, query_l, query_r);
-
-    for (const auto &[comp_l, comp_r]: complement) {
-        std::vector<PafReadData> work_rows;
-        std::vector<int32_t> work_to_original;
-        for (auto original_idx: normal_indices) {
-            PafReadData clipped;
-            if (not make_clipped_read(paf_ctg_data_original[original_idx], comp_l, comp_r, clipped))
-                continue;
-            clipped.ctg_index = (int32_t)work_rows.size();
-            clipped.priority_ref = false;
-            work_rows.push_back(clipped);
-            work_to_original.push_back(original_idx);
-        }
-        if (work_rows.empty()) continue;
-
-        std::vector<PafOutputData> core_out, core_alt_out;
-        std::vector<std::vector<PafOutputData>> core_max_out;
-        solve_ctg_read_core(work_rows, core_out, core_alt_out, core_max_out);
-        remap_output_indices(core_out, work_to_original);
-        final_outputs.insert(final_outputs.end(), core_out.begin(), core_out.end());
-    }
-
-    std::sort(final_outputs.begin(), final_outputs.end(), output_sort_less);
-    paf_ctg_out = std::move(final_outputs);
-    // Reserved-query mode makes the primary .aln.paf authoritative. The alt/all
-    // outputs are intentionally empty because their old semantics no longer apply.
-    paf_ctg_alt_out.clear();
-    paf_ctg_max_out.clear();
-}
 
 void get_overlap_range(PafReadData &paf_read_data, std::string_view cs_str) {
     auto cs_iter = cs_str.begin() + CS_TAG_START;
@@ -332,7 +91,7 @@ PafEditData get_edited_paf_data(PafOutputData &paf_out, PafReadData &paf_read_da
 
     bool break_flag, cs_add_flag;
     bool st_cut = paf_out.edited_qry_str != paf_read_data.qry_str;
-    bool nd_cut = paf_out.edited_qry_end != paf_read_data.qry_end;
+    bool nd_cut = paf_out.edited_qry_str != paf_read_data.qry_end;
     paf_edit_data.is_cut = st_cut or nd_cut;
 
     int64_t equal_len;
@@ -377,13 +136,9 @@ PafEditData get_edited_paf_data(PafOutputData &paf_out, PafReadData &paf_read_da
                 }
 
                 if (now_st and now_nd) {
-                    if (st_cut or nd_cut) {
-                        if (st_cut) {
-                            assert(std::abs(paf_out.edited_ref_str - paf_read_data.ref_overlap_range[range_index].first) == (paf_out.edited_qry_str - paf_read_data.qry_overlap_range[range_index].first));
-                        }
-                        if (nd_cut) {
-                            assert(std::abs(paf_read_data.ref_overlap_range[range_index].second - paf_out.edited_ref_end) == (paf_read_data.qry_overlap_range[range_index].second - paf_out.edited_qry_end));
-                        }
+                    if (st_cut and nd_cut) {
+                        assert(std::abs(paf_out.edited_ref_str - paf_read_data.ref_overlap_range[range_index].first) == (paf_out.edited_qry_str - paf_read_data.qry_overlap_range[range_index].first));
+                        assert(std::abs(paf_read_data.ref_overlap_range[range_index].second - paf_out.edited_ref_end) == (paf_read_data.qry_overlap_range[range_index].second - paf_out.edited_qry_end));
 
                         equal_len = paf_out.edited_qry_end - paf_out.edited_qry_str + 1;
                         cs_add_flag = false; // Nothing happen anyway
@@ -447,7 +202,7 @@ PafEditData get_edited_paf_data(PafOutputData &paf_out, PafReadData &paf_read_da
 }
 
 /// Get Best path in paf_ctg_data_original
-static void solve_ctg_read_core(std::vector<PafReadData> &paf_ctg_data_original, std::vector<PafOutputData> &paf_ctg_out, std::vector<PafOutputData> &paf_ctg_alt_out, std::vector<std::vector<PafOutputData>> &paf_ctg_max_out) {
+void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector<PafOutputData> &paf_ctg_out, std::vector<PafOutputData> &paf_ctg_alt_out, std::vector<std::vector<PafOutputData>> &paf_ctg_max_out) {
     /// Test Sesson
     // do some tests here
 
