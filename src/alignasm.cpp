@@ -398,7 +398,7 @@ int32_t main(int argc, char** argv) {
     auto cord_to_index_string = [](auto& paf_data_line) {
         auto cord = paf_data_line.original_cord;
 
-        std::string ans = "xi:A:";
+        std::string ans = "xi:Z:";
         ans += cord.first == TYPE_MAIN ? "P_" : "A_";
         ans += std::to_string(cord.second);
         return ans;
