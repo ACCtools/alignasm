@@ -169,15 +169,25 @@ int32_t main(int argc, char** argv) {
     assert(not ctg_data_vector.empty() and "data should not be empty");
 
 
-    if (program.is_used("--alt")) {
-        double ALT_BASELINE = program.get<double>("--alt_baseline");
-
-        std::filesystem::path paf_alt_loc {program.get<std::string>("--alt")};
+    bool use_alt = program.is_used("--alt");
+    std::filesystem::path paf_alt_loc {};
+    if (use_alt) {
+        paf_alt_loc = std::filesystem::path {program.get<std::string>("--alt")};
         if (paf_alt_loc.extension() != ".paf") {
-            std::cerr << "Wrong PAF file : " << std::filesystem::absolute(paf_loc);
+            std::cerr << "Wrong PAF file : " << std::filesystem::absolute(paf_alt_loc);
             std::cerr << program;
             return 1;
         }
+
+        std::error_code file_size_error;
+        auto alt_file_size = std::filesystem::file_size(paf_alt_loc, file_size_error);
+        if (not file_size_error and alt_file_size == 0) {
+            use_alt = false;
+        }
+    }
+
+    if (use_alt) {
+        double ALT_BASELINE = program.get<double>("--alt_baseline");
 
         filename = std::filesystem::absolute(paf_alt_loc);
         csv::CSVReader alt_reader(filename, format);
@@ -212,9 +222,20 @@ int32_t main(int argc, char** argv) {
         std::string tar_real_qry_chr = {};
         int64_t tar_qry_offset = -1;
         bool tar_flag = false;
+        bool tar_group_initialized = false;
         double tar_ratio = 0;
         double aln_ratio;
         PafReadData ratio_max_paf_data{};
+
+        auto flush_alt_group = [&]() {
+            if (not tar_group_initialized or tar_flag) {
+                return;
+            }
+
+            auto& tar_paf_data = paf_data[paf_map[tar_real_qry_chr]];
+            ratio_max_paf_data.ctg_index = tar_paf_data.size();
+            tar_paf_data.push_back(ratio_max_paf_data);
+        };
 
         ctg_chr.clear();
         for (int32_t row_global_index = 0; csv::CSVRow& read : alt_reader) {
@@ -263,21 +284,15 @@ int32_t main(int argc, char** argv) {
             paf_read_data.original_cord = {TYPE_ALT, row_global_index};
             get_overlap_range(paf_read_data, read[read.size() - 1].get<std::string_view>());
 
-            if (tar_qry_offset == -1) {
-                tar_qry_offset = qry_offset;
-                tar_real_qry_chr = real_qry_chr;
-            }
+            if (not tar_group_initialized or tar_qry_offset != qry_offset or tar_real_qry_chr != real_qry_chr) {
+                flush_alt_group();
 
-            if (tar_qry_offset != qry_offset or tar_real_qry_chr != real_qry_chr) {
-                if (not tar_flag) {
-                    ratio_max_paf_data.ctg_index = paf_data[paf_map[tar_real_qry_chr]].size();
-                    paf_data[paf_map[tar_real_qry_chr]].push_back(ratio_max_paf_data);
-                }
-
+                tar_group_initialized = true;
                 tar_flag = false;
                 tar_ratio = 0;
                 tar_qry_offset = qry_offset;
                 tar_real_qry_chr = real_qry_chr;
+                ratio_max_paf_data = {};
             }
 
             aln_ratio = read[PAF_ALN_LEN].get<double>() / read[PAF_QRY_TOT].get<double>();
@@ -295,6 +310,7 @@ int32_t main(int argc, char** argv) {
 
             row_global_index++;
         }
+        flush_alt_group();
     }
 
 #ifndef NDEBUG

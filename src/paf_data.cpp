@@ -77,6 +77,9 @@ PafEditData get_edited_paf_data(PafOutputData &paf_out, PafReadData &paf_read_da
     PafEditData paf_edit_data = {"cs:Z:", 0, 0, true};
     assert(paf_edit_data.edit_cs_string.length() == CS_TAG_START);
     assert(paf_read_data.ref_overlap_range.size() == paf_read_data.qry_overlap_range.size());
+    assert(paf_read_data.qry_str <= paf_out.edited_qry_str);
+    assert(paf_out.edited_qry_str <= paf_out.edited_qry_end);
+    assert(paf_out.edited_qry_end <= paf_read_data.qry_end);
 
     std::string_view cs_str = paf_read_data.cs_string;
     auto cs_iter = cs_str.begin() + CS_TAG_START;
@@ -91,7 +94,7 @@ PafEditData get_edited_paf_data(PafOutputData &paf_out, PafReadData &paf_read_da
 
     bool break_flag, cs_add_flag;
     bool st_cut = paf_out.edited_qry_str != paf_read_data.qry_str;
-    bool nd_cut = paf_out.edited_qry_str != paf_read_data.qry_end;
+    bool nd_cut = paf_out.edited_qry_end != paf_read_data.qry_end;
     paf_edit_data.is_cut = st_cut or nd_cut;
 
     int64_t equal_len;
@@ -187,14 +190,13 @@ PafEditData get_edited_paf_data(PafOutputData &paf_out, PafReadData &paf_read_da
             assert(variant_len > 0);
             assert(*cs_chk_iter == '+' or *cs_chk_iter == '-' or (*cs_chk_iter == '*' and variant_len == 2));
 
-            if (*cs_chk_iter == '*') {
-                paf_edit_data.aln_len += 1;
-            } else {
-                paf_edit_data.aln_len += variant_len;
-            }
-
             if (cs_add_flag) {
                 paf_edit_data.edit_cs_string += cs_str_substr(cs_chk_iter, cs_iter);
+                if (*cs_chk_iter == '*') {
+                    paf_edit_data.aln_len += 1;
+                } else {
+                    paf_edit_data.aln_len += variant_len;
+                }
             }
         }
     }
@@ -820,19 +822,24 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
                 }
             }else if(v == dest){
                 assert(u != src);
-                auto [x, y] = index_to_vtx(u);
+                assert(not edge_path.empty());
+                // Prefix upgrading can replace (y, y) with (x, y). Continue from
+                // the upgraded path's real endpoint, not the original (y, y).
+                auto continuation_src = std::get<1>(edge_path.back());
+                auto [x, y] = index_to_vtx(continuation_src);
                 assert(x >= 0 and x < paf_data_n and y >= 0 and y < paf_data_n);
-                auto alt_path = internal_shortest_path_recover(graph, u, v, false);
+                auto alt_path = internal_shortest_path_recover(graph, continuation_src, v, false);
                 if(alt_path.empty()){
-                    edge_path.push_back(*it);
+                    assert(continuation_src == v);
                 }else{
                     edge_path.insert(edge_path.end(), alt_path.begin(), alt_path.end());
                 }
             }else{
                 assert(not edge_path.empty());
-//                auto [px, py] = index_to_vtx(u);
-                auto uu = std::get<1>(edge_path.back());
-                auto [px, py] = index_to_vtx(uu);
+                // A previous upgrade may have replaced u == (y, y) with
+                // (x, y), so recover from the endpoint actually appended.
+                auto continuation_src = std::get<1>(edge_path.back());
+                auto [px, py] = index_to_vtx(continuation_src);
                 auto [x, y] = index_to_vtx(v);
                 if(x != y){
                     assert(px != py and py == x); // all px == py == x , x != y ones are (will be) passed by iteration. No gaps are between them!
@@ -848,7 +855,7 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
                 const auto&[nu, nv, nw] = *nit;
                 assert(v == nu); // chain
                 if(nv == dest){
-                    auto alt_path = internal_shortest_path_recover(graph, u, nv, true, y);
+                    auto alt_path = internal_shortest_path_recover(graph, continuation_src, nv, true, y);
                     if(alt_path.empty()){
                         edge_path.push_back(*it);
                     }else{
@@ -860,7 +867,7 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
                     auto [nx, ny] = index_to_vtx(nv);
                     if (nx == ny) {
                         assert(y != nx);
-                        auto alt_path = internal_shortest_path_recover(graph, u, nv, true, y);
+                        auto alt_path = internal_shortest_path_recover(graph, continuation_src, nv, true, y);
                         if(alt_path.empty()){
                             edge_path.push_back(*it);
                         }else {
@@ -870,7 +877,7 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
                         }
                     } else {
                         assert(y == nx and nx != ny);
-                        auto alt_path = internal_shortest_path_recover(graph, u, nv, false);
+                        auto alt_path = internal_shortest_path_recover(graph, continuation_src, nv, false);
                         if(alt_path.empty()){
                             edge_path.push_back(*it); edge_path.push_back(*nit);
                         }else{
@@ -880,6 +887,12 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
                     }
                 }
             }
+        }
+        assert(not edge_path.empty());
+        assert(std::get<0>(edge_path.front()) == src);
+        assert(std::get<1>(edge_path.back()) == dest);
+        for (auto it = std::next(edge_path.begin()); it != edge_path.end(); ++it) {
+            assert(std::get<1>(*std::prev(it)) == std::get<0>(*it));
         }
         PafDistance::set_mode(PafDistanceCompareMode::CALC_SUM_MODE);
         return edge_path;
@@ -1523,6 +1536,7 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
         if(UPGRADE_MODE == UpgradeMode::SINGLE_PIECE)
             paf_path = upgrade_paf_path_with_single_piece(paf_path);
         for(auto&node: paf_path){
+            assert(node.edited_qry_str <= node.edited_qry_end);
             if(not not_alt_vertex_map.contains(node.ctg_index) or not not_alt_vertex_map[node.ctg_index])
                 node.set_alt_path(true);
             else
@@ -1595,16 +1609,17 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
 
                 auto path2 = k_walk_solver.kth_shortest_walk_recover(src, dest, ans_idx, false);
                 auto paf_path2 = edge_path_to_paf_path(path2);
-                max_tot_coverage = get_total_coverage(paf_ctg_alt_out);
+                max_tot_coverage = get_total_coverage(paf_path2);
 
                 paf_ctg_alt_out = paf_path2;
             } else if (ans_idx != -1 and is_equal_paf_distance(k_path_distances[i], k_path_distances[ans_idx])) {
                 auto path2 = k_walk_solver.kth_shortest_walk_recover(src, dest, i, false);
                 auto paf_path2 = edge_path_to_paf_path(path2);
-                tot_coverage = get_total_coverage(paf_ctg_alt_out);
+                tot_coverage = get_total_coverage(paf_path2);
 
                 assert(max_tot_coverage != -1);
                 if (tot_coverage > max_tot_coverage) {
+                    max_tot_coverage = tot_coverage;
                     paf_ctg_alt_out = paf_path2;
                 }
             }
