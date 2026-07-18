@@ -5,202 +5,218 @@
 #include "k_weighted_bfs.hpp"
 #include "priority_queue_vector.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <charconv>
 #include <limits>
+#include <stdexcept>
 #include <ankerl/unordered_dense.h>
 
 thread_local PafDistanceCompareMode PafDistance::cmp_mode = PafDistanceCompareMode::CALC_SUM_MODE;
 
-void get_overlap_range(PafReadData &paf_read_data, std::string_view cs_str) {
-    auto cs_iter = cs_str.begin() + CS_TAG_START;
-    decltype(cs_iter) cs_chk_iter;
-//    std::cout << cs_str << std::endl;
+namespace {
 
-    int64_t ref_step;
-    int64_t ref_index, qry_index;
+struct CsOperation {
+    char type;
+    int64_t length;
+    std::string_view text;
+};
 
-    // str is the real begin
-    ref_index = paf_read_data.ref_str;
-    qry_index = paf_read_data.qry_str;
-    ref_step = paf_read_data.aln_fwd ? 1 : -1;
+bool cs_is_alpha(char value) {
+    return std::isalpha(static_cast<unsigned char>(value)) != 0;
+}
 
-    int64_t converted_num = -1;
-    paf_read_data.ref_overlap_range = std::vector<std::pair<int64_t, int64_t>> {};
-    paf_read_data.qry_overlap_range = std::vector<std::pair<int64_t, int64_t>> {};
-    while (cs_iter != cs_str.end()) {
-        // Analysis CS tag
-        // :7287-at:1234+t:242-tag:123*tg*ga
+std::vector<CsOperation> parse_short_cs(std::string_view cs_str) {
+    if (not cs_str.starts_with("cs:Z:")) {
+        throw std::invalid_argument("PAF record does not contain a short-form cs:Z tag");
+    }
 
-        if (*cs_iter == ':') {
-            assert(cs_iter != cs_str.end() and std::next(cs_iter) != cs_str.end());
-            cs_chk_iter = ++cs_iter;
-            // Returns first non-digit pointer
-            auto result_iter = std::from_chars(cs_iter, cs_str.end(), converted_num);
-            cs_iter = result_iter.ptr;
+    std::vector<CsOperation> operations;
+    size_t pos = CS_TAG_START;
+    while (pos < cs_str.size()) {
+        const size_t operation_start = pos;
+        const char type = cs_str[pos++];
+        int64_t length = 0;
 
-            if (cs_iter > cs_chk_iter) {
-                paf_read_data.ref_overlap_range.emplace_back(ref_index, ref_index + (converted_num - 1) * ref_step);
-                ref_index += converted_num * ref_step;
-
-                paf_read_data.qry_overlap_range.emplace_back(qry_index, qry_index + (converted_num - 1));
-                qry_index += converted_num;
-            } else {
-                // Never happen
-                assert(false);
+        if (type == ':') {
+            const char *number_start = cs_str.data() + pos;
+            const char *number_end = cs_str.data() + cs_str.size();
+            auto result = std::from_chars(number_start, number_end, length);
+            if (result.ec != std::errc{} or result.ptr == number_start or length <= 0) {
+                throw std::invalid_argument("Invalid :length operation in cs tag");
+            }
+            pos = static_cast<size_t>(result.ptr - cs_str.data());
+        } else if (type == '*') {
+            if (pos + 2 > cs_str.size() or not cs_is_alpha(cs_str[pos]) or
+                not cs_is_alpha(cs_str[pos + 1])) {
+                throw std::invalid_argument("Invalid substitution operation in cs tag");
+            }
+            pos += 2;
+            length = 1;
+        } else if (type == '+' or type == '-') {
+            const size_t sequence_start = pos;
+            while (pos < cs_str.size() and cs_is_alpha(cs_str[pos])) {
+                ++pos;
+            }
+            length = static_cast<int64_t>(pos - sequence_start);
+            if (length == 0) {
+                throw std::invalid_argument("Empty indel operation in cs tag");
             }
         } else {
-            cs_chk_iter = cs_iter++;
-            while (cs_iter != cs_str.end() and isalpha(*cs_iter) > 0) {
-                ++cs_iter;
-            }
+            throw std::invalid_argument("Unsupported operation in short-form cs tag");
+        }
 
-            auto variant_len = cs_iter - cs_chk_iter - 1;
-            assert(variant_len > 0);
+        operations.push_back({type, length, cs_str.substr(operation_start, pos - operation_start)});
+    }
+    return operations;
+}
 
-            if (*cs_chk_iter == '+') {
-                qry_index += variant_len;
-            } else if (*cs_chk_iter == '-') {
-                ref_index += variant_len * ref_step;
-            } else if (*cs_chk_iter == '*') {
-                assert(variant_len == 2);
-                ref_index += 1 * ref_step;
-                qry_index += 1;
-            } else {
-                // Never happens
-                assert(false);
-            }
+template<typename Function>
+void for_each_query_oriented_operation(const std::vector<CsOperation> &operations,
+                                       bool aln_fwd, Function function) {
+    if (aln_fwd) {
+        for (const auto &operation : operations) {
+            function(operation);
+        }
+    } else {
+        for (auto operation = operations.rbegin(); operation != operations.rend(); ++operation) {
+            function(*operation);
         }
     }
 }
 
+} // namespace
+
+void get_overlap_range(PafReadData &paf_read_data, std::string_view cs_str) {
+    const auto operations = parse_short_cs(cs_str);
+    const int64_t ref_step = paf_read_data.aln_fwd ? 1 : -1;
+    int64_t ref_index = paf_read_data.ref_str;
+    int64_t qry_index = paf_read_data.qry_str;
+
+    paf_read_data.ref_overlap_range.clear();
+    paf_read_data.qry_overlap_range.clear();
+
+    for_each_query_oriented_operation(operations, paf_read_data.aln_fwd,
+        [&](const CsOperation &operation) {
+            if (operation.type == ':') {
+                paf_read_data.ref_overlap_range.emplace_back(
+                    ref_index, ref_index + (operation.length - 1) * ref_step);
+                paf_read_data.qry_overlap_range.emplace_back(
+                    qry_index, qry_index + operation.length - 1);
+                ref_index += operation.length * ref_step;
+                qry_index += operation.length;
+            } else if (operation.type == '+') {
+                qry_index += operation.length;
+            } else if (operation.type == '-') {
+                ref_index += operation.length * ref_step;
+            } else {
+                assert(operation.type == '*');
+                ref_index += ref_step;
+                qry_index += 1;
+            }
+        });
+
+    if (qry_index != paf_read_data.qry_end + 1 or
+        ref_index != paf_read_data.ref_end + ref_step) {
+        throw std::invalid_argument("cs tag consumption does not match PAF coordinates");
+    }
+}
+
 PafEditData get_edited_paf_data(PafOutputData &paf_out, PafReadData &paf_read_data) {
-    PafEditData paf_edit_data = {"cs:Z:", 0, 0, true};
-    assert(paf_edit_data.edit_cs_string.length() == CS_TAG_START);
     assert(paf_read_data.ref_overlap_range.size() == paf_read_data.qry_overlap_range.size());
     assert(paf_read_data.qry_str <= paf_out.edited_qry_str);
     assert(paf_out.edited_qry_str <= paf_out.edited_qry_end);
     assert(paf_out.edited_qry_end <= paf_read_data.qry_end);
 
-    std::string_view cs_str = paf_read_data.cs_string;
-    auto cs_iter = cs_str.begin() + CS_TAG_START;
-    decltype(cs_iter) cs_chk_iter;
+    const bool is_cut = paf_out.edited_qry_str != paf_read_data.qry_str or
+                        paf_out.edited_qry_end != paf_read_data.qry_end;
+    if (not is_cut) {
+        return {paf_read_data.cs_string, paf_read_data.mat_num,
+                paf_read_data.aln_len, false};
+    }
 
-    auto cs_str_substr = [&](decltype(cs_iter) st, decltype(cs_iter) nd) {
-        auto st_ind = st - cs_str.begin();
-        auto nd_ind = nd - cs_str.begin();
-        assert(st_ind < nd_ind);
-        return cs_str.substr(st_ind, nd_ind - st_ind);
-    };
+    const auto operations = parse_short_cs(paf_read_data.cs_string);
+    std::vector<CsOperation> retained_operations;
+    int64_t qry_index = paf_read_data.qry_str;
 
-    bool break_flag, cs_add_flag;
-    bool st_cut = paf_out.edited_qry_str != paf_read_data.qry_str;
-    bool nd_cut = paf_out.edited_qry_end != paf_read_data.qry_end;
-    paf_edit_data.is_cut = st_cut or nd_cut;
-
-    int64_t equal_len;
-    int64_t converted_num = -1;
-    int32_t range_index = -1;
-
-    break_flag = false;
-    cs_add_flag = not st_cut;
-    while (cs_iter != cs_str.end()) {
-        // Analysis CS tag
-        // :7287-at:1234+t:242-tag:123*tg*ga
-        if (*cs_iter == ':') {
-            assert(cs_iter != cs_str.end() and std::next(cs_iter) != cs_str.end());
-            range_index++;
-            cs_chk_iter = ++cs_iter;
-
-            // Returns first non-digit pointer
-            auto result_iter = std::from_chars(cs_iter, cs_str.end(), converted_num);
-            cs_iter = result_iter.ptr;
-            assert(cs_iter > cs_chk_iter);
-
-            if (not cs_add_flag) {
-                if (paf_read_data.qry_overlap_range[range_index].first <= paf_out.edited_qry_str and
-                    paf_out.edited_qry_str <= paf_read_data.qry_overlap_range[range_index].second) {
-                    cs_add_flag = true; // Of course, now_st
+    for_each_query_oriented_operation(operations, paf_read_data.aln_fwd,
+        [&](const CsOperation &operation) {
+            if (operation.type == ':') {
+                const int64_t operation_end = qry_index + operation.length - 1;
+                const int64_t retained_start = std::max(qry_index, paf_out.edited_qry_str);
+                const int64_t retained_end = std::min(operation_end, paf_out.edited_qry_end);
+                if (retained_start <= retained_end) {
+                    retained_operations.push_back(
+                        {':', retained_end - retained_start + 1, {}});
+                }
+                qry_index += operation.length;
+            } else if (operation.type == '+') {
+                const int64_t operation_end = qry_index + operation.length - 1;
+                const bool overlaps = qry_index <= paf_out.edited_qry_end and
+                                      paf_out.edited_qry_str <= operation_end;
+                if (overlaps) {
+                    if (qry_index < paf_out.edited_qry_str or
+                        paf_out.edited_qry_end < operation_end) {
+                        throw std::logic_error("Alignment was clipped inside a cs insertion");
+                    }
+                    retained_operations.push_back(operation);
+                }
+                qry_index += operation.length;
+            } else if (operation.type == '*') {
+                if (paf_out.edited_qry_str <= qry_index and
+                    qry_index <= paf_out.edited_qry_end) {
+                    retained_operations.push_back(operation);
+                }
+                qry_index += 1;
+            } else {
+                assert(operation.type == '-');
+                if (paf_out.edited_qry_str < qry_index and
+                    qry_index <= paf_out.edited_qry_end) {
+                    retained_operations.push_back(operation);
                 }
             }
+        });
 
-            if (cs_add_flag) {
-                bool now_st, now_nd;
-                if (paf_read_data.qry_overlap_range[range_index].first <= paf_out.edited_qry_str and
-                    paf_out.edited_qry_str <= paf_read_data.qry_overlap_range[range_index].second) {
-                    now_st = true;
-                } else {
-                    now_st = false;
-                }
-                if (paf_read_data.qry_overlap_range[range_index].first <= paf_out.edited_qry_end and
-                    paf_out.edited_qry_end <= paf_read_data.qry_overlap_range[range_index].second) {
-                    now_nd = true;
-                } else {
-                    now_nd = false;
-                }
+    if (not paf_read_data.aln_fwd) {
+        std::reverse(retained_operations.begin(), retained_operations.end());
+    }
 
-                if (now_st and now_nd) {
-                    if (st_cut and nd_cut) {
-                        assert(std::abs(paf_out.edited_ref_str - paf_read_data.ref_overlap_range[range_index].first) == (paf_out.edited_qry_str - paf_read_data.qry_overlap_range[range_index].first));
-                        assert(std::abs(paf_read_data.ref_overlap_range[range_index].second - paf_out.edited_ref_end) == (paf_read_data.qry_overlap_range[range_index].second - paf_out.edited_qry_end));
-
-                        equal_len = paf_out.edited_qry_end - paf_out.edited_qry_str + 1;
-                        cs_add_flag = false; // Nothing happen anyway
-                        break_flag = true;
-                    } else {
-                        equal_len = converted_num;
-                    }
-                } else if (now_st) {
-                    if (st_cut) {
-                        assert(std::abs(paf_out.edited_ref_str - paf_read_data.ref_overlap_range[range_index].first) == (paf_out.edited_qry_str - paf_read_data.qry_overlap_range[range_index].first));
-
-                        equal_len = paf_read_data.qry_overlap_range[range_index].second - paf_out.edited_qry_str + 1;
-                    } else {
-                        equal_len = converted_num;
-                    }
-                } else if (now_nd) {
-                    if (nd_cut) {
-                        assert(std::abs(paf_read_data.ref_overlap_range[range_index].second - paf_out.edited_ref_end) == (paf_read_data.qry_overlap_range[range_index].second - paf_out.edited_qry_end));
-
-                        equal_len = paf_out.edited_qry_end - paf_read_data.qry_overlap_range[range_index].first + 1;
-                        cs_add_flag = false; // Nothing happen anyway
-                        break_flag = true;
-                    } else {
-                        equal_len = converted_num;
-                    }
-                } else {
-                    equal_len = converted_num;
-                }
-
-                paf_edit_data.edit_cs_string += (":" + std::to_string(equal_len));
-                paf_edit_data.aln_len += equal_len;
-                paf_edit_data.mat_num += equal_len;
-
-                if (break_flag) {
-                    break_flag = false;
-                    break;
-                }
-            }
+    PafEditData edited = {"cs:Z:", 0, 0, true};
+    int64_t query_bases = 0;
+    int64_t reference_bases = 0;
+    for (const auto &operation : retained_operations) {
+        if (operation.type == ':') {
+            edited.edit_cs_string += ":" + std::to_string(operation.length);
+            edited.mat_num += static_cast<int32_t>(operation.length);
+            edited.aln_len += static_cast<int32_t>(operation.length);
+            query_bases += operation.length;
+            reference_bases += operation.length;
         } else {
-            cs_chk_iter = cs_iter++;
-            while (cs_iter != cs_str.end() and isalpha(*cs_iter) > 0) {
-                ++cs_iter;
-            }
-
-            auto variant_len = cs_iter - cs_chk_iter - 1;
-            assert(variant_len > 0);
-            assert(*cs_chk_iter == '+' or *cs_chk_iter == '-' or (*cs_chk_iter == '*' and variant_len == 2));
-
-            if (cs_add_flag) {
-                paf_edit_data.edit_cs_string += cs_str_substr(cs_chk_iter, cs_iter);
-                if (*cs_chk_iter == '*') {
-                    paf_edit_data.aln_len += 1;
-                } else {
-                    paf_edit_data.aln_len += variant_len;
-                }
+            edited.edit_cs_string.append(operation.text);
+            if (operation.type == '+') {
+                query_bases += operation.length;
+                edited.aln_len += static_cast<int32_t>(operation.length);
+            } else if (operation.type == '-') {
+                reference_bases += operation.length;
+                edited.aln_len += static_cast<int32_t>(operation.length);
+            } else {
+                assert(operation.type == '*');
+                query_bases += 1;
+                reference_bases += 1;
+                edited.aln_len += 1;
             }
         }
     }
-    return paf_edit_data;
+
+    const int64_t expected_query_bases =
+        paf_out.edited_qry_end - paf_out.edited_qry_str + 1;
+    const int64_t expected_reference_bases =
+        std::abs(paf_out.edited_ref_end - paf_out.edited_ref_str) + 1;
+    if (query_bases != expected_query_bases or
+        reference_bases != expected_reference_bases) {
+        throw std::logic_error("Edited cs tag does not match edited PAF coordinates");
+    }
+    return edited;
 }
 
 /// Get Best path in paf_ctg_data_original
@@ -453,19 +469,21 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
         // we don't need SV_BASELINE
 //        if (qry_diff > SV_BASELINE) {
 //            anom += 1;
-//            qry_diff = SV_BASELINE;
+        //            qry_diff = SV_BASELINE;
 //        }
         int64_t ref_diff = 0;
         if (paf_ctg_data_sorted[lft.cur_idx].ref_chr == paf_ctg_data_sorted[rht.cur_idx].ref_chr
             and paf_ctg_data_sorted[lft.cur_idx].aln_fwd == paf_ctg_data_sorted[rht.cur_idx].aln_fwd) {
             // Case: same reference and same align direction
-            if (paf_ctg_data_sorted[lft.cur_idx].aln_fwd) {
-                // Case: forward direction
-                ref_diff += ref_abs((rht.ref_str) - (lft.ref_end + 1));
-            } else {
-                // Case: Backward Direction
-                ref_diff += ref_abs((rht.ref_str + 1) - (lft.ref_end));
-            }
+            // ref_str/ref_end follow increasing query coordinates. Measure
+            // the signed gap from the query-facing end of lft to the
+            // query-facing start of rht. A negative value is a reference
+            // overlap.
+            const int64_t signed_ref_gap =
+                paf_ctg_data_sorted[lft.cur_idx].aln_fwd
+                    ? rht.ref_str - (lft.ref_end + 1)
+                    : lft.ref_end - (rht.ref_str + 1);
+            ref_diff += ref_abs(signed_ref_gap);
             if (ref_diff > SV_BASELINE) {
                 anom += 1;
                 ref_diff = SV_BASELINE;
@@ -475,6 +493,10 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
             // Case: different align direction
             anom += 1;
             ref_diff += SV_INV_PENALTY;
+            // An inversion junction connects adjacent reference-interval
+            // boundaries, not the query-facing ends used for same-strand
+            // gaps. Using signed_ref_gap here charges the inverted interval
+            // length and makes the two junctions asymmetric.
             if (paf_ctg_data_sorted[lft.cur_idx].aln_fwd) {
                 ref_diff += ref_abs(rht.ref_end - (lft.ref_end + 1));
             } else {
