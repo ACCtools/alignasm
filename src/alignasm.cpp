@@ -97,6 +97,16 @@ int32_t main(int argc, char** argv) {
     std::vector<std::string> ctg_name_vector;
     std::string ctg_chr;
 
+    auto find_cs_tag = [](csv::CSVRow& read) -> std::string_view {
+        for (size_t field_index = PAF_MAT_QUL + 1; field_index < read.size(); field_index++) {
+            auto field = read[field_index].get<std::string_view>();
+            if (field.size() >= CS_TAG_START and field.substr(0, CS_TAG_START) == "cs:Z:") {
+                return field;
+            }
+        }
+        return {};
+    };
+
     for (int32_t ctg_index = 0, paf_index = 0, row_global_index = 0; csv::CSVRow& read : reader) {
         std::string qry_chr, ref_chr;
         ref_chr = read[PAF_REF_CHR].get<std::string>();
@@ -151,13 +161,17 @@ int32_t main(int argc, char** argv) {
         paf_read_data.map_qul = read[PAF_MAT_QUL].get<uint8_t>();
 
 
-        // cs tag is last in alignment paf
-        paf_read_data.cs_string = read[read.size() - 1].get<std::string_view>();
+        auto cs_tag = find_cs_tag(read);
+        if (cs_tag.empty()) {
+            std::cerr << "Missing cs:Z tag in PAF record for query '" << qry_chr << "'\n";
+            return 1;
+        }
+        paf_read_data.cs_string = cs_tag;
         paf_read_data.mat_num = read[PAF_MAT_NUM].get<int32_t>();
         paf_read_data.aln_len = read[PAF_ALN_LEN].get<int32_t>();
         paf_read_data.original_cord = {TYPE_MAIN, row_global_index};
 
-        get_overlap_range(paf_read_data, read[read.size() - 1].get<std::string_view>());
+        get_overlap_range(paf_read_data, cs_tag);
         ctg_data_vector.push_back(paf_read_data);
 
         row_global_index++;
@@ -277,12 +291,16 @@ int32_t main(int argc, char** argv) {
 
             paf_read_data.map_qul = read[PAF_MAT_QUL].get<uint8_t>();
 
-            // cs tag is last in alignment
-            paf_read_data.cs_string = read[read.size() - 1].get<std::string_view>();
+            auto cs_tag = find_cs_tag(read);
+            if (cs_tag.empty()) {
+                std::cerr << "Missing cs:Z tag in alternative PAF record for query '" << qry_chr << "'\n";
+                return 1;
+            }
+            paf_read_data.cs_string = cs_tag;
             paf_read_data.mat_num = read[PAF_MAT_NUM].get<int32_t>();
             paf_read_data.aln_len = read[PAF_ALN_LEN].get<int32_t>();
             paf_read_data.original_cord = {TYPE_ALT, row_global_index};
-            get_overlap_range(paf_read_data, read[read.size() - 1].get<std::string_view>());
+            get_overlap_range(paf_read_data, cs_tag);
 
             if (not tar_group_initialized or tar_qry_offset != qry_offset or tar_real_qry_chr != real_qry_chr) {
                 flush_alt_group();
