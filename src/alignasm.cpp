@@ -56,6 +56,11 @@ int32_t main(int argc, char** argv) {
             .default_value(false)
             .implicit_value(true);
 
+    program.add_argument("--write-all")
+            .help("Write optional alternative and tied path outputs")
+            .default_value(false)
+            .implicit_value(true);
+
     try {
         program.parse_args(argc, argv);
     }
@@ -72,6 +77,7 @@ int32_t main(int argc, char** argv) {
     }
 
     NON_SKIP_LINKABLE = program.get<bool>("--non_skip_linkable");
+    const bool write_all = program.get<bool>("--write-all");
 
     /** CSV read */
     csv::CSVFormat format;
@@ -349,12 +355,12 @@ int32_t main(int argc, char** argv) {
         std::cout << "Analyze PAF " << paf_data.size() << " data in parallel" << std::endl;
 
         tbb::task_arena arena(num_thread);
-        arena.execute([&paf_data, &paf_out_data, &paf_alt_out_data, &paf_max_out_datas] {
+        arena.execute([&paf_data, &paf_out_data, &paf_alt_out_data, &paf_max_out_datas, write_all] {
             // tbb::this_task_arena::isolate([&] {
                 tbb::parallel_for(tbb::blocked_range<unsigned long>(0, paf_data.size()),
-                                  [&paf_data, &paf_out_data, &paf_alt_out_data, &paf_max_out_datas](const tbb::blocked_range<unsigned long>& range) {
+                                  [&paf_data, &paf_out_data, &paf_alt_out_data, &paf_max_out_datas, write_all](const tbb::blocked_range<unsigned long>& range) {
                                       for (auto i = range.begin(); i < range.end(); i++) {
-                                          solve_ctg_read(paf_data[i], paf_out_data[i], paf_alt_out_data[i], paf_max_out_datas[i]);
+                                          solve_ctg_read(paf_data[i], paf_out_data[i], paf_alt_out_data[i], paf_max_out_datas[i], write_all);
                                       }
                                   });
             // });
@@ -370,7 +376,7 @@ int32_t main(int argc, char** argv) {
 
 
         for (int32_t i = 0; i < paf_data.size(); i++) {
-            solve_ctg_read(paf_data[i], paf_out_data[i], paf_alt_out_data[i], paf_max_out_datas[i]);
+            solve_ctg_read(paf_data[i], paf_out_data[i], paf_alt_out_data[i], paf_max_out_datas[i], write_all);
             bar.set_option(id::option::PostfixText{
                 std::to_string(i + 1) + "/" + std::to_string(paf_data.size())
             });
@@ -388,7 +394,7 @@ int32_t main(int argc, char** argv) {
 
     for (int32_t i = 0; i < paf_data.size(); i++) {
         std::cout << ctg_name_vector[i] << std::endl;
-        solve_ctg_read(paf_data[i], paf_out_data[i], paf_alt_out_data[i], paf_max_out_datas[i]);
+        solve_ctg_read(paf_data[i], paf_out_data[i], paf_alt_out_data[i], paf_max_out_datas[i], write_all);
         bar.set_option(id::option::PostfixText{
             std::to_string(i + 1) + "/" + std::to_string(paf_data.size())
         });
@@ -486,6 +492,8 @@ int32_t main(int argc, char** argv) {
 
     std::cout << "Write output PAF file" << std::endl;
     process_output(paf_out_data);
-    process_output(paf_alt_out_data, ".alt");
-    process_max_output(paf_max_out_datas, ".all");
+    if (write_all) {
+        process_output(paf_alt_out_data, ".alt");
+        process_max_output(paf_max_out_datas, ".all");
+    }
 }

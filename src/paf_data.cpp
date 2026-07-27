@@ -220,7 +220,11 @@ PafEditData get_edited_paf_data(PafOutputData &paf_out, PafReadData &paf_read_da
 }
 
 /// Get Best path in paf_ctg_data_original
-void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector<PafOutputData> &paf_ctg_out, std::vector<PafOutputData> &paf_ctg_alt_out, std::vector<std::vector<PafOutputData>> &paf_ctg_max_out) {
+void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original,
+                    std::vector<PafOutputData> &paf_ctg_out,
+                    std::vector<PafOutputData> &paf_ctg_alt_out,
+                    std::vector<std::vector<PafOutputData>> &paf_ctg_max_out,
+                    bool write_all) {
     /// Test Sesson
     // do some tests here
 
@@ -1603,46 +1607,50 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original, std::vector
             if (tot_coverage > max_tot_coverage) {
                 max_tot_coverage = tot_coverage;
                 paf_ctg_out = paf_path_max;
-                paf_ctg_max_out.clear();
-            } else if (max_tot_coverage == tot_coverage) {
+                if (write_all) {
+                    paf_ctg_max_out.clear();
+                }
+            } else if (write_all and max_tot_coverage == tot_coverage) {
                 paf_ctg_max_out.push_back(paf_path_max);
             }
         }
     }
 
     /// Find EdgePath 2 (Alt)
-    max_tot_coverage = -1;
-    if ((int64_t) k_path_distances.size() >= 2 and min_distance.anom != anom_dis[dest]) {
-        PafDistance ans{true, -1, -1};
-        int64_t ans_up{}, ans_down{};
-        int64_t ans_idx = -1;
-        for (int64_t i = 1; i < k_path_distances.size(); i++) {
-            const auto &d = k_path_distances[i];
-            if (d.anom >= min_distance.anom) continue;
-            auto up = d.score_sum() - min_distance.score_sum();
-            assert(up > 0);
-            auto down = min_distance.anom - d.anom;
-            assert(down > 0);
-            if (ans_idx == -1 or up * ans_down < down * ans_up) {
-                ans = d;
-                ans_up = up;
-                ans_down = down;
-                ans_idx = i;
+    if (write_all) {
+        max_tot_coverage = -1;
+        if ((int64_t) k_path_distances.size() >= 2 and min_distance.anom != anom_dis[dest]) {
+            PafDistance ans{true, -1, -1};
+            int64_t ans_up{}, ans_down{};
+            int64_t ans_idx = -1;
+            for (int64_t i = 1; i < k_path_distances.size(); i++) {
+                const auto &d = k_path_distances[i];
+                if (d.anom >= min_distance.anom) continue;
+                auto up = d.score_sum() - min_distance.score_sum();
+                assert(up > 0);
+                auto down = min_distance.anom - d.anom;
+                assert(down > 0);
+                if (ans_idx == -1 or up * ans_down < down * ans_up) {
+                    ans = d;
+                    ans_up = up;
+                    ans_down = down;
+                    ans_idx = i;
 
-                auto path2 = k_walk_solver.kth_shortest_walk_recover(src, dest, ans_idx, false);
-                auto paf_path2 = edge_path_to_paf_path(path2);
-                max_tot_coverage = get_total_coverage(paf_path2);
+                    auto path2 = k_walk_solver.kth_shortest_walk_recover(src, dest, ans_idx, false);
+                    auto paf_path2 = edge_path_to_paf_path(path2);
+                    max_tot_coverage = get_total_coverage(paf_path2);
 
-                paf_ctg_alt_out = paf_path2;
-            } else if (ans_idx != -1 and is_equal_paf_distance(k_path_distances[i], k_path_distances[ans_idx])) {
-                auto path2 = k_walk_solver.kth_shortest_walk_recover(src, dest, i, false);
-                auto paf_path2 = edge_path_to_paf_path(path2);
-                tot_coverage = get_total_coverage(paf_path2);
-
-                assert(max_tot_coverage != -1);
-                if (tot_coverage > max_tot_coverage) {
-                    max_tot_coverage = tot_coverage;
                     paf_ctg_alt_out = paf_path2;
+                } else if (ans_idx != -1 and is_equal_paf_distance(k_path_distances[i], k_path_distances[ans_idx])) {
+                    auto path2 = k_walk_solver.kth_shortest_walk_recover(src, dest, i, false);
+                    auto paf_path2 = edge_path_to_paf_path(path2);
+                    tot_coverage = get_total_coverage(paf_path2);
+
+                    assert(max_tot_coverage != -1);
+                    if (tot_coverage > max_tot_coverage) {
+                        max_tot_coverage = tot_coverage;
+                        paf_ctg_alt_out = paf_path2;
+                    }
                 }
             }
         }

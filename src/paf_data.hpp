@@ -190,7 +190,11 @@ struct PafDistance{
 
 void get_overlap_range(PafReadData &paf_read_data, std::string_view cs_str);
 PafEditData get_edited_paf_data(PafOutputData &paf_out, PafReadData &paf_read_data);
-void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data, std::vector<PafOutputData> &paf_ctg_out, std::vector<PafOutputData> &paf_ctg_alt_out, std::vector<std::vector<PafOutputData>> &paf_ctg_max_out);
+void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data,
+                    std::vector<PafOutputData> &paf_ctg_out,
+                    std::vector<PafOutputData> &paf_ctg_alt_out,
+                    std::vector<std::vector<PafOutputData>> &paf_ctg_max_out,
+                    bool write_all);
 
 
 #endif //ALIGNASM_PAF_DATA_HPP
