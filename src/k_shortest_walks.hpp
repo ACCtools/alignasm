@@ -16,6 +16,7 @@
 #include <cinttypes>
 #include <algorithm>
 #include <cassert>
+#include <type_traits>
 #include "leftist_heap.hpp"
 
 /**
@@ -36,6 +37,7 @@ private:
     int64_t n;
     bool is_dag; // contains whether this graph is DAG or not.
     bool negative_edge; // contains whether this graph contains neagative edge weight
+    bool stable_ties;
 
     template <typename T> using min_heap = std::priority_queue<T, std::vector<T>, std::greater<T>>;
     std::vector<Distance> d; // d(x): shortest path from x to sink
@@ -62,8 +64,8 @@ public:
      * is_dag: whether g is DAG or not.
      * negative_edge: whether there is a negative edge or not
      */
-    explicit kShortestWalksSolver(const WeightedGraph& g_, Distance MAX_DISTANCE_, Distance IDENTITY_DISTANCE_, bool is_dag_ = false, bool negative_edge_ = false)
-            : g(g_), n(g_.size()), MAX_DISTANCE(MAX_DISTANCE_), IDENTITY_DISTANCE(IDENTITY_DISTANCE_), is_dag(is_dag_), negative_edge(negative_edge_) {}
+    explicit kShortestWalksSolver(const WeightedGraph& g_, Distance MAX_DISTANCE_, Distance IDENTITY_DISTANCE_, bool is_dag_ = false, bool negative_edge_ = false, bool stable_ties_ = false)
+            : g(g_), n(g_.size()), MAX_DISTANCE(MAX_DISTANCE_), IDENTITY_DISTANCE(IDENTITY_DISTANCE_), is_dag(is_dag_), negative_edge(negative_edge_), stable_ties(stable_ties_) {}
 
     // returns {distance vector, prev vertex vector}
     std::pair<std::vector<Distance>, std::vector<int64_t>> dijkstra(const WeightedGraph& g_, int64_t src) {
@@ -188,6 +190,14 @@ public:
         if (d[source] == MAX_DISTANCE)
             return std::move(std::vector<Distance>{});
 
+        // Quality mode's default output needs only the exact optimum. Preserve
+        // the same reverse-DAG tie order as a later --write-all enumeration.
+        if (stable_ties && k == 1) {
+            distances = {d[source]};
+            path_last_node = {-1};
+            return distances;
+        }
+
         std::vector<std::basic_string<int64_t>> tree(n);
         for (int64_t u = 0; u < n; ++u)
             if (best[u] != -1)
@@ -227,18 +237,24 @@ public:
         if (not h[source])
             return std::move(distances);
 
-        {
-            min_heap<std::tuple<Distance, heap_t*, int64_t>> q;
+        auto enumerate = [&]<bool Stable>() {
+            using Entry = std::conditional_t<Stable, std::tuple<Distance, int64_t, heap_t*>,
+                                                     std::tuple<Distance, heap_t*, int64_t>>;
+            min_heap<Entry> q;
             auto emplace = [&](const Distance& d_, heap_t* h_, int64_t pre = -1){
                 int64_t cur = nodes.size();
-                q.emplace(d_, h_, cur);
+                if constexpr (Stable) q.emplace(d_, cur, h_);
+                else q.emplace(d_, h_, cur);
                 nodes.push_back(h_);
                 prev_node.push_back(pre);
             };
 
             emplace(d[source] + h[source]->key, h[source], -1);
             while (!q.empty() and (int64_t) distances.size() < k) {
-                auto [cd, ch, cur] = q.top();
+                const auto entry = q.top();
+                const auto cd = std::get<0>(entry);
+                auto ch = std::get<Stable ? 2 : 1>(entry);
+                auto cur = std::get<Stable ? 1 : 2>(entry);
                 q.pop();
                 distances.push_back(cd);
                 path_last_node.push_back(cur);
@@ -246,7 +262,9 @@ public:
                 if (ch->left) emplace(cd + ch->left->key - ch->key, ch->left, prev_node[cur]); // same heap, add difference
                 if (ch->right) emplace(cd + ch->right->key - ch->key, ch->right, prev_node[cur]); // same heap, add difference
             }
-        }
+        };
+        if (stable_ties) enumerate.template operator()<true>();
+        else enumerate.template operator()<false>();
         return std::move(distances);
     }
 

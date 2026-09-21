@@ -4,6 +4,9 @@
 
 #ifndef ALIGNASM_GRAPH_OPERATIONS_HPP
 #define ALIGNASM_GRAPH_OPERATIONS_HPP
+#include <cassert>
+#include <cstdint>
+#include <utility>
 #include <vector>
 
 template<typename Dist_t>

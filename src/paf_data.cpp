@@ -224,25 +224,33 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original,
                     std::vector<PafOutputData> &paf_ctg_out,
                     std::vector<PafOutputData> &paf_ctg_alt_out,
                     std::vector<std::vector<PafOutputData>> &paf_ctg_max_out,
-                    bool write_all) {
+                    bool write_all, const ScoringConfig& scoring_config,
+                    QualityReport* quality_report) {
     /// Test Sesson
     // do some tests here
 
     /// Start
-    static int64_t test_case = 0;
-    ++test_case;
+    scoring_config.validate();
+    if (quality_report) *quality_report = {};
 
     /// PAF_DATA SORT
     auto paf_ctg_data_sorted = paf_ctg_data_original;
 
     assert(not paf_ctg_data_sorted.empty()); // "There should at least be 1 data"
-    if (paf_ctg_data_sorted.size() == 1) {
+    if (paf_ctg_data_sorted.size() == 1 && scoring_config.mode == ScoringMode::LEGACY) {
         paf_ctg_data_original[0].ctg_sorted_index = 0;
         paf_ctg_out.emplace_back(paf_ctg_data_sorted[0]); // constructing with emplace_back
         return;
     }
 
-    std::sort(paf_ctg_data_sorted.begin(), paf_ctg_data_sorted.end()); // sort by (qry, ref)
+    if (scoring_config.mode == ScoringMode::QUALITY) {
+        std::sort(paf_ctg_data_sorted.begin(), paf_ctg_data_sorted.end(), [](const auto& left, const auto& right) {
+            return std::tie(left.qry_str, left.qry_end, left.ctg_index) <
+                   std::tie(right.qry_str, right.qry_end, right.ctg_index);
+        });
+    } else {
+        std::sort(paf_ctg_data_sorted.begin(), paf_ctg_data_sorted.end());
+    }
     for(int64_t i = 0; i < (int64_t) paf_ctg_data_sorted.size(); i++){
         assert(0 <= paf_ctg_data_sorted[i].ctg_index and paf_ctg_data_sorted[i].ctg_index < paf_ctg_data_original.size());
         paf_ctg_data_original[paf_ctg_data_sorted[i].ctg_index].ctg_sorted_index = i;
@@ -452,6 +460,9 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original,
     // ex) diff([1,3] , [4,6]) = 4 - 3 - 1 = 0 */
     auto get_score = [&](Internal_Vertex lft, Internal_Vertex rht, bool calc_sum_) -> PafDistance {
         assert(linkable(lft, rht));
+        // Quality mode shares this topology but assigns its own additive weights
+        // once all clipping states are known.
+        if (scoring_config.mode == ScoringMode::QUALITY) return PafDistance(calc_sum_);
         auto ref_abs = [](auto x){
             if(x < 0){
                 return -x * REF_NEGATIVE_PENALTY;
@@ -555,7 +566,8 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original,
                 }
                 PafDistance dist(true);
                 auto &[calc_sum, qry_score, ref_score, anom, qul_nonzero, qul_total] = dist;
-                qry_score += paf_ctg_data_sorted[i].qry_str * SV_FRONT_END_COEFFICIENT;
+                if (scoring_config.mode == ScoringMode::LEGACY)
+                    qry_score += paf_ctg_data_sorted[i].qry_str * SV_FRONT_END_COEFFICIENT;
 //                if (qry_score > SV_BASELINE) {
 //                    qry_score = SV_BASELINE;
 //                    anom += 1;
@@ -581,7 +593,8 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original,
                 PafDistance dist(true);
                 auto &[calc_sum, qry_score, ref_score, anom, qul_nonzero, qul_total] = dist;
                 calc_sum = true;
-                qry_score += (paf_ctg_data_sorted[i].qry_total_length - paf_ctg_data_sorted[i].qry_end - 1) * SV_FRONT_END_COEFFICIENT;
+                if (scoring_config.mode == ScoringMode::LEGACY)
+                    qry_score += (paf_ctg_data_sorted[i].qry_total_length - paf_ctg_data_sorted[i].qry_end - 1) * SV_FRONT_END_COEFFICIENT;
 //                if (qry_score > SV_BASELINE) {
 //                    qry_score = SV_BASELINE;
 //                    anom += 1;
@@ -704,6 +717,126 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original,
     int64_t dest = vtx_n++;
     Graph<PafDistance> graph;
     make_Graph(graph, vtx_n, src, dest);
+
+    if (scoring_config.mode == ScoringMode::QUALITY) {
+        std::vector<QualityInterval> intervals;
+        const auto query_length = paf_ctg_data_sorted.front().qry_total_length;
+        for (const auto& read : paf_ctg_data_sorted) {
+            if (read.qry_total_length != query_length)
+                throw std::invalid_argument("inconsistent lengths for the same query");
+            intervals.push_back({read.qry_str, checked_score_integer(static_cast<__int128>(read.qry_end) + 1), read.map_qul});
+        }
+        QualityScorer scorer(scoring_config, query_length, intervals);
+        auto segment = [&](const Internal_Vertex& vertex) {
+            const auto& read = paf_ctg_data_sorted[vertex.cur_idx];
+            return QualitySegment{vertex.qry_str, checked_score_integer(static_cast<__int128>(vertex.qry_end) + 1),
+                                  vertex.ref_str, vertex.ref_end, read.ref_chr, read.aln_fwd, read.map_qul};
+        };
+        auto vertex = [&](int64_t index) {
+            const auto [previous, current] = index_to_vtx(index);
+            return Internal_Vertex(previous, current, edited_loc_str, paf_ctg_data_sorted);
+        };
+
+        Graph<QualityDistance> quality_graph(vtx_n);
+        for (int64_t from = 0; from < vtx_n; ++from) {
+            quality_graph[from].reserve(graph[from].size());
+            for (const auto& [to, unused] : graph[from]) {
+                QualityDistance score;
+                if (from == src) {
+                    score = scorer.start(vertex(to).qry_str);
+                } else if (to == dest) {
+                    score = scorer.finish(segment(vertex(from)));
+                } else {
+                    auto left = vertex(from);
+                    const auto right = vertex(to);
+                    if (!right.is_one) {
+                        left.qry_end = edited_loc_pre_end[right.pre_idx][right.cur_idx].first;
+                        left.ref_end = edited_loc_pre_end[right.pre_idx][right.cur_idx].second;
+                    }
+                    score = scorer.transition(segment(left), segment(right));
+                }
+                add_edge(quality_graph, from, to, score);
+            }
+            // Do not keep two complete weighted graphs resident in memory.
+            decltype(graph)::value_type().swap(graph[from]);
+        }
+        graph.clear();
+
+        constexpr int64_t path_limit = 10000;
+        kShortestWalksSolver solver(quality_graph, QualityDistance::max(), QualityDistance{}, true, false, true);
+        const auto distances = solver.k_shortest_walks(src, dest, write_all ? path_limit : 1);
+        if (distances.empty()) throw std::logic_error("no complete alignment path");
+        if (quality_report) {
+            quality_report->paths_examined = static_cast<int64_t>(distances.size());
+            quality_report->limit_reached = write_all && distances.size() == path_limit;
+        }
+
+        auto recover = [&](int64_t rank) {
+            const auto edges = solver.kth_shortest_walk_recover(src, dest, rank, false);
+            std::vector<PafOutputData> pieces;
+            int64_t current_vertex = src;
+            for (const auto& [from, to, unused] : edges) {
+                if (from != current_vertex) throw std::logic_error("disconnected recovered path");
+                current_vertex = to;
+                if (to == dest) continue;
+                const auto [previous, current] = index_to_vtx(to);
+                if (previous != current) {
+                    if (pieces.empty() || pieces.back().ctg_index != paf_ctg_data_sorted[previous].ctg_index)
+                        throw std::logic_error("invalid recovered clipping state");
+                    pieces.back().edited_qry_end = edited_loc_pre_end[previous][current].first;
+                    pieces.back().edited_ref_end = edited_loc_pre_end[previous][current].second;
+                }
+                pieces.emplace_back(paf_ctg_data_sorted[current]);
+                pieces.back().edited_qry_str = edited_loc_str[previous][current].first;
+                pieces.back().edited_ref_str = edited_loc_str[previous][current].second;
+            }
+            if (current_vertex != dest) throw std::logic_error("incomplete recovered path");
+            std::vector<QualitySegment> segments;
+            for (const auto& piece : pieces) {
+                const auto& read = paf_ctg_data_original[piece.ctg_index];
+                if (piece.edited_qry_str < read.qry_str || piece.edited_qry_end > read.qry_end)
+                    throw std::logic_error("recovered alignment extends outside its input interval");
+                segments.push_back({piece.edited_qry_str, checked_score_integer(static_cast<__int128>(piece.edited_qry_end) + 1),
+                                    piece.edited_ref_str, piece.edited_ref_end, read.ref_chr, read.aln_fwd, read.map_qul});
+            }
+            const auto verified = scorer.evaluate(segments);
+            if (!verified.same_components(distances[rank]))
+                throw std::logic_error("recovered path score disagrees with graph distance");
+            return pieces;
+        };
+        auto report = [&](const std::string& kind, int64_t number, int64_t rank) {
+            if (quality_report) quality_report->paths.push_back({kind, number, distances[rank]});
+        };
+
+        paf_ctg_out = recover(0);
+        report("selected", 0, 0);
+        if (write_all) {
+            for (int64_t rank = 1; rank < static_cast<int64_t>(distances.size()) && distances[rank] == distances[0]; ++rank) {
+                paf_ctg_max_out.push_back(recover(rank));
+                report("tied", static_cast<int64_t>(paf_ctg_max_out.size()), rank);
+            }
+            int64_t alternative = -1, best_up = 0, best_down = 1;
+            for (int64_t rank = 1; rank < static_cast<int64_t>(distances.size()); ++rank) {
+                if (distances[rank].anom >= distances[0].anom) continue;
+                const auto up = checked_score_integer(static_cast<__int128>(distances[rank].total_scaled) - distances[0].total_scaled);
+                const auto down = distances[0].anom - distances[rank].anom;
+                if (up < 0) throw std::logic_error("shortest paths were returned out of order");
+                const auto candidate_ratio = static_cast<__int128>(up) * best_down;
+                const auto best_ratio = static_cast<__int128>(best_up) * down;
+                if (alternative == -1 || candidate_ratio < best_ratio ||
+                    (candidate_ratio == best_ratio && distances[rank] < distances[alternative])) {
+                    alternative = rank;
+                    best_up = up;
+                    best_down = down;
+                }
+            }
+            if (alternative != -1) {
+                paf_ctg_alt_out = recover(alternative);
+                report("alternative", 0, alternative);
+            }
+        }
+        return;
+    }
 
     /// ANOM GRAPH Construction
     Graph<int64_t> anom_graph(vtx_n);

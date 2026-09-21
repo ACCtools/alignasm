@@ -38,6 +38,8 @@ add_executable(alignasm
         src/priority_queue_vector.hpp
         src/graph_operations.hpp
         src/paf_data.cpp
+        src/quality_scoring.cpp
+        src/quality_scoring.hpp
         src/leftist_heap.hpp
 )
 
@@ -48,3 +50,14 @@ if (CMAKE_BUILD_TYPE STREQUAL "Debug")
 endif()
 
 target_link_libraries(alignasm csv unordered_dense::unordered_dense TBB::tbb argparse)
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(quality_scoring_test tests/quality_scoring_test.cpp src/quality_scoring.cpp)
+    target_include_directories(quality_scoring_test PRIVATE src)
+    add_test(NAME quality_scoring COMMAND quality_scoring_test)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME alignasm_cli COMMAND "${Python3_EXECUTABLE}"
+             "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cli.py" "$<TARGET_FILE:alignasm>")
+    set_tests_properties(alignasm_cli PROPERTIES TIMEOUT 180)
+endif()

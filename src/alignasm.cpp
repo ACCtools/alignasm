@@ -17,6 +17,10 @@
 #include <cassert>
 #include <charconv>
 #include <string_view>
+#include <fstream>
+#include <iomanip>
+#include <sstream>
+#include <stdexcept>
 
 #ifdef NDEBUG
 #include <tbb/parallel_for.h>
@@ -25,7 +29,7 @@
 
 bool NON_SKIP_LINKABLE;
 
-int32_t main(int argc, char** argv) {
+int32_t run_alignasm(int argc, char** argv) {
     /** Test Session */
     argparse::ArgumentParser program("alignasm", "0.1.0");
 
@@ -61,6 +65,21 @@ int32_t main(int argc, char** argv) {
             .default_value(false)
             .implicit_value(true);
 
+    program.add_argument("--scoring")
+            .help("Path scoring: quality (default) or legacy")
+            .default_value(std::string("quality"));
+    program.add_argument("--sv-cost")
+            .help("Quality mode: maximum reference connection cost (positive integer)")
+            .default_value(int64_t{2000})
+            .scan<'d', int64_t>();
+    program.add_argument("--mapq-loss-per-kb")
+            .help("Quality mode: penalty for losing MAPQ 60 over 1 kb (nonnegative integer)")
+            .default_value(int64_t{10})
+            .scan<'d', int64_t>();
+    program.add_argument("--score-report")
+            .help("Quality mode: write per-path score components to this TSV")
+            .nargs(1);
+
     try {
         program.parse_args(argc, argv);
     }
@@ -78,6 +97,31 @@ int32_t main(int argc, char** argv) {
 
     NON_SKIP_LINKABLE = program.get<bool>("--non_skip_linkable");
     const bool write_all = program.get<bool>("--write-all");
+    const auto scoring_name = program.get<std::string>("--scoring");
+    if (scoring_name != "quality" && scoring_name != "legacy")
+        throw std::invalid_argument("--scoring must be quality or legacy");
+    const ScoringConfig scoring_config{
+        scoring_name == "quality" ? ScoringMode::QUALITY : ScoringMode::LEGACY,
+        program.get<int64_t>("--sv-cost"), program.get<int64_t>("--mapq-loss-per-kb")};
+    scoring_config.validate();
+    if (scoring_config.mode == ScoringMode::LEGACY &&
+        (program.is_used("--sv-cost") || program.is_used("--mapq-loss-per-kb") || program.is_used("--score-report")))
+        throw std::invalid_argument("--sv-cost, --mapq-loss-per-kb and --score-report require --scoring quality");
+    std::filesystem::path score_report_path;
+    if (program.is_used("--score-report")) {
+        score_report_path = program.get<std::string>("--score-report");
+        if (score_report_path.empty()) throw std::invalid_argument("--score-report must name a file");
+        const auto report = std::filesystem::weakly_canonical(score_report_path);
+        std::vector<std::filesystem::path> reserved{paf_loc};
+        if (program.is_used("--alt")) reserved.emplace_back(program.get<std::string>("--alt"));
+        for (const auto suffix : {".aln.paf", ".aln.alt.paf", ".aln.all.paf"}) {
+            auto output = paf_loc;
+            reserved.push_back(output.replace_extension(suffix));
+        }
+        for (const auto& path : reserved)
+            if (report == std::filesystem::weakly_canonical(path))
+                throw std::invalid_argument("--score-report must differ from PAF input and output paths");
+    }
 
     /** CSV read */
     csv::CSVFormat format;
@@ -348,6 +392,17 @@ int32_t main(int argc, char** argv) {
     /** Output Data */
     std::vector<std::vector<PafOutputData>> paf_out_data(paf_data.size()), paf_alt_out_data(paf_data.size());
     std::vector<std::vector<std::vector<PafOutputData>> > paf_max_out_datas(paf_data.size());
+    std::vector<QualityReport> quality_reports;
+    if (scoring_config.mode == ScoringMode::QUALITY && (write_all || !score_report_path.empty()))
+        quality_reports.resize(paf_data.size());
+    auto solve_one = [&](size_t index) {
+        try {
+            solve_ctg_read(paf_data[index], paf_out_data[index], paf_alt_out_data[index], paf_max_out_datas[index],
+                           write_all, scoring_config, quality_reports.empty() ? nullptr : &quality_reports[index]);
+        } catch (const std::exception& error) {
+            throw std::runtime_error("query '" + ctg_name_vector[index] + "': " + error.what());
+        }
+    };
 
 #ifdef NDEBUG
     int num_thread = program.get<int>("--thread");
@@ -355,12 +410,12 @@ int32_t main(int argc, char** argv) {
         std::cout << "Analyze PAF " << paf_data.size() << " data in parallel" << std::endl;
 
         tbb::task_arena arena(num_thread);
-        arena.execute([&paf_data, &paf_out_data, &paf_alt_out_data, &paf_max_out_datas, write_all] {
+        arena.execute([&paf_data, &solve_one] {
             // tbb::this_task_arena::isolate([&] {
                 tbb::parallel_for(tbb::blocked_range<unsigned long>(0, paf_data.size()),
-                                  [&paf_data, &paf_out_data, &paf_alt_out_data, &paf_max_out_datas, write_all](const tbb::blocked_range<unsigned long>& range) {
+                                  [&solve_one](const tbb::blocked_range<unsigned long>& range) {
                                       for (auto i = range.begin(); i < range.end(); i++) {
-                                          solve_ctg_read(paf_data[i], paf_out_data[i], paf_alt_out_data[i], paf_max_out_datas[i], write_all);
+                                          solve_one(i);
                                       }
                                   });
             // });
@@ -376,7 +431,7 @@ int32_t main(int argc, char** argv) {
 
 
         for (int32_t i = 0; i < paf_data.size(); i++) {
-            solve_ctg_read(paf_data[i], paf_out_data[i], paf_alt_out_data[i], paf_max_out_datas[i], write_all);
+            solve_one(i);
             bar.set_option(id::option::PostfixText{
                 std::to_string(i + 1) + "/" + std::to_string(paf_data.size())
             });
@@ -394,7 +449,7 @@ int32_t main(int argc, char** argv) {
 
     for (int32_t i = 0; i < paf_data.size(); i++) {
         std::cout << ctg_name_vector[i] << std::endl;
-        solve_ctg_read(paf_data[i], paf_out_data[i], paf_alt_out_data[i], paf_max_out_datas[i], write_all);
+        solve_one(i);
         bar.set_option(id::option::PostfixText{
             std::to_string(i + 1) + "/" + std::to_string(paf_data.size())
         });
@@ -495,5 +550,52 @@ int32_t main(int argc, char** argv) {
     if (write_all) {
         process_output(paf_alt_out_data, ".alt");
         process_max_output(paf_max_out_datas, ".all");
+    }
+    for (size_t index = 0; index < quality_reports.size(); ++index)
+        if (quality_reports[index].limit_reached)
+            std::cerr << "Query '" << ctg_name_vector[index]
+                      << "': reached the 10000-path auxiliary enumeration limit; selected optimum is unaffected\n";
+
+    if (!score_report_path.empty()) {
+        std::ofstream output(score_report_path);
+        if (!output) throw std::runtime_error("cannot open score report: " + score_report_path.string());
+        auto writer = csv::make_tsv_writer(output);
+        writer << std::vector<std::string>{
+            "query", "path_kind", "path_number", "scoring", "sv_cost_limit", "mapq_loss_per_kb",
+            "total_scaled", "score_scale", "total_cost", "sv_cost", "query_cost", "mapq_deficit",
+            "mapq_loss_scaled", "mapq_loss_cost", "unmapped_query_bp", "non_collinear_joins",
+            "pieces", "paths_examined", "enumeration_limit_reached"};
+        auto display_cost = [](int64_t scaled) {
+            std::ostringstream value;
+            value << std::fixed << std::setprecision(6)
+                  << static_cast<long double>(scaled) / QUALITY_SCORE_SCALE;
+            return value.str();
+        };
+        for (size_t index = 0; index < quality_reports.size(); ++index) {
+            const auto& report = quality_reports[index];
+            for (const auto& path : report.paths) {
+                const auto& score = path.score;
+                writer << std::vector<std::string>{
+                    ctg_name_vector[index], path.kind, std::to_string(path.path_number), "quality",
+                    std::to_string(scoring_config.sv_cost), std::to_string(scoring_config.mapq_loss_per_kb),
+                    std::to_string(score.total_scaled), std::to_string(QUALITY_SCORE_SCALE), display_cost(score.total_scaled),
+                    std::to_string(score.sv_cost), std::to_string(score.query_cost), std::to_string(score.mapq_deficit),
+                    std::to_string(score.mapq_loss_scaled), display_cost(score.mapq_loss_scaled),
+                    std::to_string(score.unmapped_bp), std::to_string(score.anom), std::to_string(score.pieces),
+                    std::to_string(report.paths_examined), report.limit_reached ? "1" : "0"};
+            }
+        }
+        output.flush();
+        if (!output) throw std::runtime_error("failed to write score report: " + score_report_path.string());
+    }
+    return 0;
+}
+
+int main(int argc, char** argv) {
+    try {
+        return run_alignasm(argc, argv);
+    } catch (const std::exception& error) {
+        std::cerr << "alignasm: " << error.what() << '\n';
+        return 1;
     }
 }

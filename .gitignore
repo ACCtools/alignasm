@@ -5,4 +5,5 @@ build*
 Archive
 vcpkg
 *.paf
+!tests/fixtures/*.paf
 *.log

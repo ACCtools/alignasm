@@ -7,6 +7,7 @@
 #include <string>
 #include <string_view>
 #include <iostream>
+#include "quality_scoring.hpp"
 
 // This is a flag that, if this is set as true, there is no edge such a -> b, when a -> c -> b exists.
 extern bool NON_SKIP_LINKABLE;
@@ -194,7 +195,9 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data,
                     std::vector<PafOutputData> &paf_ctg_out,
                     std::vector<PafOutputData> &paf_ctg_alt_out,
                     std::vector<std::vector<PafOutputData>> &paf_ctg_max_out,
-                    bool write_all);
+                    bool write_all,
+                    const ScoringConfig& scoring_config = ScoringConfig{},
+                    QualityReport* quality_report = nullptr);
 
 
 #endif //ALIGNASM_PAF_DATA_HPP
