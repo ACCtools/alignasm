@@ -41,8 +41,17 @@ missing and contributes zero. The original MAPQ is preserved in the output.
 The selected alignment supplies the quality at a mapped query position. An
 unmapped position supplies zero, so dropping a high-quality interval still
 incurs a quality loss. Positions without any candidate have a zero baseline.
-Overlapping alignments are clipped using the existing `cs`-based rules, and
-each query position is counted once.
+Overlapping alignments are clipped at compatible `cs` match boundaries, and
+each query position is counted once. Quality mode retains up to three cut
+states per overlapping pair: the earliest valid cut, its reverse-query mirror
+(the latest valid cut), and the best two-piece cut under the same scoring key.
+All retained states participate in the joint path optimization; choosing a
+pairwise-best cut alone can make adjacent cuts incompatible in a three-piece
+chain. Equivalent cuts use a canonical, unordered reference-breakend key for
+deterministic ordering. Legacy mode retains its original first-feasible cut.
+Different complete paths may still tie on the whole comparison key, so this
+does not establish unique breakpoint coordinates. `--write-all` exposes tied
+paths within the documented enumeration limit.
 
 ```text
 D = sum over query positions (baseline MAPQ - selected MAPQ)
@@ -78,9 +87,14 @@ The quality mode optimizes this one objective throughout the existing DAG.
 It does not run the legacy query-first gap upgrade or the final
 query-plus-reference-span maximization. The reconstructed path is independently
 rescored and checked against its graph distance. Invalid score arithmetic or
-signed 64-bit overflow is reported as an error. The candidate graph, overlap
-cut positions, `--alt` filtering, and `--non_skip_linkable` graph restriction
-are unchanged; this is not a search over every possible alignment or cut.
+signed 64-bit overflow is reported as an error. Cut candidates are endpoints
+of adjacent matched-block overlaps, or nearest matched-block gaps when an
+adjacent cut is unavailable. The earliest, latest, and two-piece-optimal
+candidates define a bounded, reverse-complement-closed set; the search does
+not include every possible cut coordinate. Admitted alignments, `--alt`
+filtering, mandatory overlap components, and `--non_skip_linkable` restrictions
+are unchanged. A low-quality isolated component can therefore still force a
+join; this cut correction does not change that separate graph restriction.
 
 **Legacy compatibility:**
 
@@ -98,6 +112,8 @@ by default.
 
 - In quality mode, `.aln.all.paf` contains additional paths tied on the entire
   comparison key above. Their query names retain the `.1`, `.2`, ... suffixes.
+  Different compatible cut states can contribute additional tied paths, so
+  enumeration counts need not match the earlier first-feasible-cut policy.
   `.aln.alt.paf` contains a path with fewer non-collinear joins minimizing
   `increase in total cost / decrease in joins`, with the common comparison key
   breaking ties. A zero cost increase is allowed.

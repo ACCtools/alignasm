@@ -68,7 +68,9 @@ class AlignasmCLI(unittest.TestCase):
         self.assertEqual(score["mapq_deficit"], "0")
         self.assertEqual(score["unmapped_query_bp"], "4")
         self.assertEqual(score["non_collinear_joins"], "1")
-        self.assertEqual(score["paths_examined"], "1547")
+        # Symmetric cut states add compatible paths; the selected biological
+        # source records and exact score remain the frozen expectation above.
+        self.assertEqual(score["paths_examined"], "6115")
         self.assertEqual(score["enumeration_limit_reached"], "0")
         fast, _ = self.run_case("real_fast", source)
         self.assertEqual((directory / "input.aln.paf").read_bytes(), (fast / "input.aln.paf").read_bytes())
@@ -98,13 +100,64 @@ class AlignasmCLI(unittest.TestCase):
                       + row("overlap", 200, 90, 200, "chr1", positions[1], 60, strand))
             directory, _ = self.run_case("overlap" + strand, source)
             selected = self.paf(directory)
-            self.assertEqual([(int(r[2]), int(r[3])) for r in selected], [(0, 90), (90, 200)])
-            self.assertEqual([int(r[9]) for r in selected], [90, 110])
-            self.assertIn("cs:Z::90", selected[0])
+            # Both cuts have the same cost. The unordered reference-breakend
+            # rule prefers the lower reference boundary; its query cut depends
+            # on strand for these two distinct coordinate fixtures.
+            cut = 90 if strand == "+" else 100
+            self.assertEqual([(int(r[2]), int(r[3])) for r in selected], [(0, cut), (cut, 200)])
+            self.assertEqual([int(r[9]) for r in selected], [cut, 200-cut])
+            self.assertIn(f"cs:Z::{cut}", selected[0])
             score = self.scores(directory)[0]
             self.assertEqual(score["total_scaled"], "0")
             self.assertEqual(score["mapq_deficit"], "0")
             self.assertEqual(score["pieces"], "2")
+
+    def test_unequal_mapq_overlap_is_reverse_complement_invariant(self):
+        source = (row("rc", 10000, 0, 6000, "chr1", 10000, 60)
+                  + row("rc", 10000, 5000, 10000, "chr2", 20000, 20))
+        reversed_source = (row("rc", 10000, 4000, 10000, "chr1", 10000, 60, "-")
+                           + row("rc", 10000, 0, 5000, "chr2", 20000, 20, "-"))
+        forward, _ = self.run_case("rc_forward", source, ["--non_skip_linkable"])
+        reverse, _ = self.run_case("rc_reverse", reversed_source, ["--non_skip_linkable"])
+        for field in ["total_scaled", "mapq_loss_scaled", "unmapped_query_bp", "non_collinear_joins", "pieces"]:
+            self.assertEqual(self.scores(forward)[0][field], self.scores(reverse)[0][field], field)
+        self.assertEqual(self.scores(forward)[0]["total_scaled"], str(2000*60000))
+
+        def geometry(rows, reverse_query=False):
+            result = []
+            for r in rows:
+                start, end, strand = int(r[2]), int(r[3]), r[4]
+                if reverse_query:
+                    start, end = 10000-end, 10000-start
+                    strand = "+" if strand == "-" else "-"
+                result.append((start, end, strand, r[5], int(r[7]), int(r[8])))
+            return sorted(result)
+        self.assertEqual(geometry(self.paf(forward)), geometry(self.paf(reverse), True))
+
+    def test_joint_cuts_preserve_compatible_three_piece_path(self):
+        for mapq in [0, 20]:
+            middle = row("triple", 25000, 5000, 20000, "chr1", 15000, mapq,
+                         cs=":3000-" + "a"*1000 + ":1000+" + "a"*1000 + ":10000")
+            fields = middle.rstrip().split("\t")
+            fields[9], fields[10] = "14000", "16000"
+            source = (row("triple", 25000, 0, 15000, "chr1", 10000, 60)
+                      + "\t".join(fields) + "\n"
+                      + row("triple", 25000, 8500, 25000, "chr1", 19500, 60))
+            reversed_rows = []
+            for line in source.splitlines():
+                fields = line.split("\t")
+                fields[2], fields[3] = str(25000-int(fields[3])), str(25000-int(fields[2]))
+                fields[4] = "-"
+                reversed_rows.append("\t".join(fields) + "\n")
+            forward, _ = self.run_case(f"triple_forward_{mapq}", source, ["--non_skip_linkable"])
+            reverse, _ = self.run_case(f"triple_reverse_{mapq}", "".join(reversed_rows), ["--non_skip_linkable"])
+            before, after = self.scores(forward)[0], self.scores(reverse)[0]
+            self.assertEqual(before["total_scaled"], after["total_scaled"])
+            self.assertEqual(before["pieces"], "3")
+            self.assertEqual(after["pieces"], "3")
+            # A known feasible path cuts at query5000 and8500. Independently
+            # optimal cuts15000 and8500 conflict and would wrongly cost1000.
+            self.assertLessEqual(int(before["total_scaled"]), 3500*(60-mapq)*10)
 
     def test_reference_span_does_not_override_ties(self):
         source = (row("span", 1000, 0, 1000, "chr1", 0, 0)

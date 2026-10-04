@@ -6,9 +6,11 @@
 #include "priority_queue_vector.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <charconv>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <ankerl/unordered_dense.h>
 
@@ -273,6 +275,27 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original,
     paf_ctg_part.push_back(paf_data_n);
 
     /// Get Edited Loc after cutting
+    // Experimental quality-only overlap policy: compare a reversal-closed set
+    // of cs-match cuts using the unchanged whole-path objective. The legacy
+    // first-feasible-cut policy below remains byte-for-byte unchanged.
+    std::optional<QualityScorer> overlap_scorer;
+    struct QualityCut {
+        int64_t left_query, left_ref, right_query, right_ref;
+        int64_t left_block, right_block;
+    };
+    std::vector<std::vector<std::vector<QualityCut>>> quality_cut_options;
+    if (scoring_config.mode == ScoringMode::QUALITY) {
+        quality_cut_options.resize(paf_data_n,
+            std::vector<std::vector<QualityCut>>(paf_data_n));
+        const auto length = paf_ctg_data_sorted.front().qry_total_length;
+        std::vector<QualityInterval> intervals;
+        for (const auto& read : paf_ctg_data_sorted) {
+            if (read.qry_total_length != length)
+                throw std::invalid_argument("inconsistent lengths for the same query");
+            intervals.push_back({read.qry_str, checked_score_integer(static_cast<__int128>(read.qry_end) + 1), read.map_qul});
+        }
+        overlap_scorer.emplace(scoring_config, length, intervals);
+    }
     // pair when failed to edit
     constexpr std::pair<int64_t, int64_t> FAIL_EDIT{-1, -1};
     // (x -> y)
@@ -312,6 +335,112 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original,
             assert(part_idx[i] == part_idx[j]);
             int64_t cur_len = (int64_t) cur.qry_overlap_range.size();
             if (qry_partial_overlap(pre, cur)) { // pre doesn't contain cur
+                if (overlap_scorer) {
+                    auto& cuts = quality_cut_options[i][j];
+                    const int64_t pre_step = pre.aln_fwd ? 1 : -1;
+                    const int64_t cur_step = cur.aln_fwd ? 1 : -1;
+                    auto append_cut = [&](int64_t left_query, int64_t right_query,
+                                          int64_t left_block, int64_t right_block) {
+                        cuts.push_back({left_query,
+                            pre.ref_overlap_range[left_block].first +
+                                (left_query - pre.qry_overlap_range[left_block].first) * pre_step,
+                            right_query,
+                            cur.ref_overlap_range[right_block].first +
+                                (right_query - cur.qry_overlap_range[right_block].first) * cur_step,
+                            left_block, right_block});
+                    };
+                    // For adjacent cuts, q is the right piece's first query
+                    // base and q-1 the left piece's last. Within one pair of
+                    // match blocks the objective is affine in q, so endpoints
+                    // suffice to minimize this two-piece score.
+                    for (int64_t p = 0, q = 0; p < pre_len && q < cur_len;) {
+                        const auto [a, b] = pre.qry_overlap_range[p];
+                        const auto [c, d] = cur.qry_overlap_range[q];
+                        const int64_t low = std::max(a + 1, c);
+                        const int64_t high = std::min(b + 1, d);
+                        if (low <= high) {
+                            append_cut(low - 1, low, p, q);
+                            if (low != high) append_cut(high - 1, high, p, q);
+                        }
+                        if (b + 1 < d) ++p;
+                        else if (b + 1 > d) ++q;
+                        else { ++p; ++q; }
+                    }
+                    // Preserve the original preference for adjacent matches.
+                    // If no adjacent match cut exists, retain all nearest-gap
+                    // choices. Keeping all equally small gaps makes the set
+                    // closed under query reversal as well.
+                    if (cuts.empty()) {
+                        int64_t nearest_gap = std::numeric_limits<int64_t>::max();
+                        int64_t p = -1;
+                        for (int64_t q = 0; q < cur_len; ++q) {
+                            const auto right_query = cur.qry_overlap_range[q].first;
+                            while (p + 1 < pre_len && pre.qry_overlap_range[p + 1].second < right_query) ++p;
+                            if (p < 0) continue;
+                            const auto left_query = pre.qry_overlap_range[p].second;
+                            const auto gap = right_query - left_query - 1;
+                            if (gap < nearest_gap) { cuts.clear(); nearest_gap = gap; }
+                            if (gap == nearest_gap) append_cut(left_query, right_query, p, q);
+                        }
+                    }
+                    if (cuts.empty())
+                        throw std::logic_error("overlapping alignments have no compatible cs-match cut");
+
+                    using Breakend = std::tuple<int32_t, int64_t, int32_t>;
+                    auto canonical_breakends = [&](const QualityCut& cut) {
+                        std::array<Breakend, 2> key{
+                            Breakend{pre.ref_chr, cut.left_ref + (pre.aln_fwd ? 1 : 0), pre.aln_fwd ? 1 : 0},
+                            Breakend{cur.ref_chr, cut.right_ref + (cur.aln_fwd ? 0 : 1), cur.aln_fwd ? 0 : 1}};
+                        if (key[1] < key[0]) std::swap(key[0], key[1]);
+                        return key;
+                    };
+                    auto evaluate_cut = [&](const QualityCut& cut) {
+                        return overlap_scorer->evaluate({
+                            {pre.qry_str, cut.left_query + 1, pre.ref_str, cut.left_ref,
+                             pre.ref_chr, pre.aln_fwd, pre.map_qul},
+                            {cut.right_query, cur.qry_end + 1, cut.right_ref, cur.ref_end,
+                             cur.ref_chr, cur.aln_fwd, cur.map_qul}});
+                    };
+                    // The historical earliest cut and its reverse-query mirror
+                    // preserve old feasible paths in both orientations. Add
+                    // the best two-piece cut, but do not commit to it: it can
+                    // conflict with a third overlapping alignment. These three
+                    // structural roles bound state growth without a score or
+                    // beam-width threshold. This is not every possible cut.
+                    auto by_query = [](const auto& a, const auto& b) {
+                        return std::tie(a.left_query, a.right_query) <
+                               std::tie(b.left_query, b.right_query);
+                    };
+                    const auto earliest = *std::min_element(cuts.begin(), cuts.end(), by_query);
+                    const auto latest = *std::max_element(cuts.begin(), cuts.end(), by_query);
+                    auto pair_best = cuts.front();
+                    auto pair_score = evaluate_cut(pair_best);
+                    for (size_t c = 1; c < cuts.size(); ++c) {
+                        const auto score = evaluate_cut(cuts[c]);
+                        if (score < pair_score || (score == pair_score &&
+                            canonical_breakends(cuts[c]) < canonical_breakends(pair_best))) {
+                            pair_best = cuts[c]; pair_score = score;
+                        }
+                    }
+                    cuts = {earliest, latest, pair_best};
+                    std::sort(cuts.begin(), cuts.end(), by_query);
+                    cuts.erase(std::unique(cuts.begin(), cuts.end(), [](const auto& a, const auto& b) {
+                        return a.left_query == b.left_query && a.right_query == b.right_query &&
+                               a.left_ref == b.left_ref && a.right_ref == b.right_ref;
+                    }), cuts.end());
+                    // Ordering only supplies a deterministic, direction-neutral
+                    // tie order; the complete DAG chooses its compatible cuts.
+                    std::sort(cuts.begin(), cuts.end(), [&](const auto& a, const auto& b) {
+                        return canonical_breakends(a) < canonical_breakends(b);
+                    });
+                    const auto& best = cuts.front();
+                    edited_loc_pre_end[i][j] = {best.left_query, best.left_ref};
+                    edited_loc_str[i][j] = {best.right_query, best.right_ref};
+                    edited_overlap_idx[i][j] = {best.left_block, best.right_block};
+                    index_of_vtx[i][j] = (int64_t) vtx_of_index.size();
+                    vtx_of_index.emplace_back(i, j);
+                    continue;
+                }
                 bool determined = false;
                 int64_t min_gap = -1;
                 std::pair<int64_t, int64_t> min_gap_idx = {-1, -1};
@@ -445,6 +574,17 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original,
         if (not rht.is_one) {
             // (ij/jj) -> (jk)
             if (lft.cur_idx != rht.pre_idx) return false;
+            if (scoring_config.mode == ScoringMode::QUALITY) {
+                int64_t earliest_start = paf_ctg_data_sorted[lft.cur_idx].qry_str;
+                if (!lft.is_one) {
+                    earliest_start = std::numeric_limits<int64_t>::max();
+                    for (const auto& cut : quality_cut_options[lft.pre_idx][lft.cur_idx])
+                        earliest_start = std::min(earliest_start, cut.right_query);
+                }
+                return std::any_of(quality_cut_options[rht.pre_idx][rht.cur_idx].begin(),
+                    quality_cut_options[rht.pre_idx][rht.cur_idx].end(),
+                    [&](const auto& cut) { return earliest_start <= cut.left_query; });
+            }
             return lft.qry_str < rht.qry_str;
         } else {
             // rht.is_one holds
@@ -727,35 +867,64 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original,
             intervals.push_back({read.qry_str, checked_score_integer(static_cast<__int128>(read.qry_end) + 1), read.map_qul});
         }
         QualityScorer scorer(scoring_config, query_length, intervals);
-        auto segment = [&](const Internal_Vertex& vertex) {
-            const auto& read = paf_ctg_data_sorted[vertex.cur_idx];
-            return QualitySegment{vertex.qry_str, checked_score_integer(static_cast<__int128>(vertex.qry_end) + 1),
-                                  vertex.ref_str, vertex.ref_end, read.ref_chr, read.aln_fwd, read.map_qul};
+        struct ExpandedVertex {
+            int64_t previous, current;
+            int64_t query_start, ref_start;
+            int64_t previous_query_end, previous_ref_end;
         };
-        auto vertex = [&](int64_t index) {
-            const auto [previous, current] = index_to_vtx(index);
-            return Internal_Vertex(previous, current, edited_loc_str, paf_ctg_data_sorted);
+        std::vector<ExpandedVertex> expanded;
+        std::vector<std::vector<int64_t>> variants(vtx_n);
+        for (int64_t node = 0; node < src; ++node) {
+            const auto [previous, current] = index_to_vtx(node);
+            const auto& read = paf_ctg_data_sorted[current];
+            if (previous == current) {
+                variants[node].push_back(expanded.size());
+                expanded.push_back({previous, current, read.qry_str, read.ref_str, -1, -1});
+            } else {
+                for (const auto& cut : quality_cut_options[previous][current]) {
+                    variants[node].push_back(expanded.size());
+                    expanded.push_back({previous, current, cut.right_query, cut.right_ref,
+                                        cut.left_query, cut.left_ref});
+                }
+            }
+        }
+        const int64_t quality_src = expanded.size(), quality_dest = quality_src + 1;
+        auto segment = [&](int64_t node) {
+            const auto& vertex = expanded[node];
+            const auto& read = paf_ctg_data_sorted[vertex.current];
+            return QualitySegment{vertex.query_start, checked_score_integer(static_cast<__int128>(read.qry_end) + 1),
+                                  vertex.ref_start, read.ref_end, read.ref_chr, read.aln_fwd, read.map_qul};
         };
 
-        Graph<QualityDistance> quality_graph(vtx_n);
+        // Expand the original mandatory-component topology over all retained
+        // cut states. The objective jointly selects the path and its cuts.
+        // This does not add the optional-component bypasses of the separate
+        // complete-DAG experiment.
+        Graph<QualityDistance> quality_graph(expanded.size() + 2);
         for (int64_t from = 0; from < vtx_n; ++from) {
-            quality_graph[from].reserve(graph[from].size());
             for (const auto& [to, unused] : graph[from]) {
-                QualityDistance score;
                 if (from == src) {
-                    score = scorer.start(vertex(to).qry_str);
+                    for (const auto right : variants[to])
+                        add_edge(quality_graph, quality_src, right, scorer.start(expanded[right].query_start));
                 } else if (to == dest) {
-                    score = scorer.finish(segment(vertex(from)));
+                    for (const auto left : variants[from])
+                        add_edge(quality_graph, left, quality_dest, scorer.finish(segment(left)));
                 } else {
-                    auto left = vertex(from);
-                    const auto right = vertex(to);
-                    if (!right.is_one) {
-                        left.qry_end = edited_loc_pre_end[right.pre_idx][right.cur_idx].first;
-                        left.ref_end = edited_loc_pre_end[right.pre_idx][right.cur_idx].second;
+                    for (const auto left : variants[from]) {
+                        for (const auto right : variants[to]) {
+                            auto left_piece = segment(left);
+                            const auto right_piece = segment(right);
+                            const auto& right_vertex = expanded[right];
+                            if (right_vertex.previous != right_vertex.current) {
+                                left_piece.query_end = right_vertex.previous_query_end + 1;
+                                left_piece.ref_last = right_vertex.previous_ref_end;
+                            }
+                            if (left_piece.query_start >= left_piece.query_end ||
+                                left_piece.query_end > right_piece.query_start) continue;
+                            add_edge(quality_graph, left, right, scorer.transition(left_piece, right_piece));
+                        }
                     }
-                    score = scorer.transition(segment(left), segment(right));
                 }
-                add_edge(quality_graph, from, to, score);
             }
             // Do not keep two complete weighted graphs resident in memory.
             decltype(graph)::value_type().swap(graph[from]);
@@ -764,7 +933,7 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original,
 
         constexpr int64_t path_limit = 10000;
         kShortestWalksSolver solver(quality_graph, QualityDistance::max(), QualityDistance{}, true, false, true);
-        const auto distances = solver.k_shortest_walks(src, dest, write_all ? path_limit : 1);
+        const auto distances = solver.k_shortest_walks(quality_src, quality_dest, write_all ? path_limit : 1);
         if (distances.empty()) throw std::logic_error("no complete alignment path");
         if (quality_report) {
             quality_report->paths_examined = static_cast<int64_t>(distances.size());
@@ -772,25 +941,26 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original,
         }
 
         auto recover = [&](int64_t rank) {
-            const auto edges = solver.kth_shortest_walk_recover(src, dest, rank, false);
+            const auto edges = solver.kth_shortest_walk_recover(quality_src, quality_dest, rank, false);
             std::vector<PafOutputData> pieces;
-            int64_t current_vertex = src;
+            int64_t current_vertex = quality_src;
             for (const auto& [from, to, unused] : edges) {
                 if (from != current_vertex) throw std::logic_error("disconnected recovered path");
                 current_vertex = to;
-                if (to == dest) continue;
-                const auto [previous, current] = index_to_vtx(to);
+                if (to == quality_dest) continue;
+                const auto& state = expanded[to];
+                const auto previous = state.previous, current = state.current;
                 if (previous != current) {
                     if (pieces.empty() || pieces.back().ctg_index != paf_ctg_data_sorted[previous].ctg_index)
                         throw std::logic_error("invalid recovered clipping state");
-                    pieces.back().edited_qry_end = edited_loc_pre_end[previous][current].first;
-                    pieces.back().edited_ref_end = edited_loc_pre_end[previous][current].second;
+                    pieces.back().edited_qry_end = state.previous_query_end;
+                    pieces.back().edited_ref_end = state.previous_ref_end;
                 }
                 pieces.emplace_back(paf_ctg_data_sorted[current]);
-                pieces.back().edited_qry_str = edited_loc_str[previous][current].first;
-                pieces.back().edited_ref_str = edited_loc_str[previous][current].second;
+                pieces.back().edited_qry_str = state.query_start;
+                pieces.back().edited_ref_str = state.ref_start;
             }
-            if (current_vertex != dest) throw std::logic_error("incomplete recovered path");
+            if (current_vertex != quality_dest) throw std::logic_error("incomplete recovered path");
             std::vector<QualitySegment> segments;
             for (const auto& piece : pieces) {
                 const auto& read = paf_ctg_data_original[piece.ctg_index];
