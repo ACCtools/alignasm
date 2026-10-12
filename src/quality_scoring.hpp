@@ -2,16 +2,18 @@
 #define ALIGNASM_QUALITY_SCORING_HPP
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <tuple>
 #include <vector>
 
-enum class ScoringMode { QUALITY, LEGACY };
+enum class ScoringMode { QUALITY, COVERAGE, LEGACY };
 
 struct ScoringConfig {
     ScoringMode mode = ScoringMode::QUALITY;
     int64_t sv_cost = 2000;
     int64_t mapq_loss_per_kb = 10;
+    int64_t coverage_mapq = 20;
     void validate() const;
 };
 
@@ -48,6 +50,9 @@ struct QualitySegment {
 // All ranking coordinates are additive. In particular, there is no ratio or
 // rounding in the ordering used by the shortest-path/sidetrack algorithms.
 struct QualityDistance {
+    // Coverage mode ranks this first. Other modes leave it zero. Keeping this
+    // separate avoids an arbitrary large scalar penalty and its overflow.
+    int64_t confident_coverage_loss_bp = 0;
     int64_t total_scaled = 0;
     int64_t mapq_loss_scaled = 0;
     int64_t unmapped_bp = 0;
@@ -60,7 +65,8 @@ struct QualityDistance {
 
     static QualityDistance max();
     auto key() const {
-        return std::tie(total_scaled, mapq_loss_scaled, unmapped_bp, anom, pieces);
+        return std::tie(confident_coverage_loss_bp, total_scaled,
+                        mapq_loss_scaled, unmapped_bp, anom, pieces);
     }
     bool operator==(const QualityDistance& other) const;
     bool operator!=(const QualityDistance& other) const { return !(*this == other); }
@@ -85,11 +91,14 @@ public:
 private:
     ScoringConfig config_;
     MapqEnvelope envelope_;
+    std::optional<MapqEnvelope> confident_envelope_;
+    int64_t confident_loss(int64_t start, int64_t end, uint8_t mapq = 0) const;
     void validate_segment(const QualitySegment& segment) const;
     std::pair<int64_t, int64_t> junction(const QualitySegment& left,
                                        const QualitySegment& right) const;
     QualityDistance distance(int64_t query_cost, int64_t sv_cost, int64_t deficit,
-                             int64_t unmapped, int64_t joins, int64_t pieces) const;
+                             int64_t unmapped, int64_t joins, int64_t pieces,
+                             int64_t confident_loss) const;
 };
 
 struct QualityPathReport {

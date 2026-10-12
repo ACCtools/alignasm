@@ -96,6 +96,44 @@ filtering, mandatory overlap components, and `--non_skip_linkable` restrictions
 are unchanged. A low-quality isolated component can therefore still force a
 join; this cut correction does not change that separate graph restriction.
 
+**Optional confident-coverage priority:**
+
+```sh
+alignasm input.paf --scoring coverage --coverage-mapq 20 --score-report scores.tsv
+```
+
+This mode addresses a tradeoff in the default scalar objective: omitting an
+801 bp MAPQ-60 alignment can cost less than one extra connection at B=2000.
+Coverage mode first minimizes the number of query bases that have an admitted
+alignment at or above `--coverage-mapq` but are not covered by a selected
+alignment at or above that threshold. It then uses the entire quality-mode
+comparison key. The default threshold is 20; valid values are 1 through 60.
+MAPQ 255 is missing and never qualifies; other values above 60 are capped.
+`--coverage-mapq` is accepted only with `--scoring coverage`.
+
+Coverage is the union of PAF query intervals, including internal alignment
+gaps; it is not a count of matching bases or supporting molecules. Overlapping
+or duplicated records do not multiply coverage. No input locus or individual
+record is mandatory: an equally confident continuous alignment can explain
+the same sequence with fewer connections. Bases for which no qualifying
+alignment exists have no coverage priority. Low-MAPQ alignments retain the
+usual costs. `--mapq-loss-per-kb 0` disables the secondary MAPQ penalty, not
+the leading coverage criterion.
+
+Both the main path and overlap cuts use this additive, lexicographic objective;
+the recovered path is independently rescored. The admissible graph, including
+mandatory components and its incomplete set of overlap cuts, is unchanged.
+If qualifying intervals cannot coexist on a legal path, the reported minimum
+`confident_coverage_loss_bp` may be positive. Alternative paths with fewer
+joins must preserve this minimum before their scalar cost is compared.
+
+This is an opt-in alignment policy, not a calibrated SV confidence model.
+High MAPQ does not rule out incorrect reference placement or a chimeric
+assembly, and even a very short qualifying interval can change the selected
+path. Independent junction evidence and a broader accuracy benchmark are
+needed before adopting this policy as a pipeline default. `quality` remains
+the default, and historical `legacy` selection is unchanged.
+
 **Legacy compatibility:**
 
 ```sh
@@ -117,6 +155,9 @@ by default.
   `.aln.alt.paf` contains a path with fewer non-collinear joins minimizing
   `increase in total cost / decrease in joins`, with the common comparison key
   breaking ties. A zero cost increase is allowed.
+- Coverage mode uses the same outputs with confident-coverage loss preceding
+  the quality comparison key. A path sacrificing confident coverage is not
+  emitted as a simpler `.aln.alt.paf` alternative.
 - Auxiliary paths are considered within the first 10,000 enumerated paths.
   Reaching that limit is reported; it does not affect the exact selected
   optimum within the graph. A limit notification alone does not establish
@@ -128,7 +169,10 @@ by default.
 The optional score TSV records query and path kind/number, B and K,
 `total_scaled` and `score_scale=60000`, reference/query costs, raw MAPQ
 deficit, scaled MAPQ loss, unmapped bp, joins, pieces, paths examined, and
-whether the auxiliary enumeration limit was reached. Decimal display columns
+whether the auxiliary enumeration limit was reached. It also records
+`coverage_mapq` and `confident_coverage_loss_bp` (both `.` outside coverage
+mode, where confident coverage is not measured). In coverage mode `total_cost` is the secondary
+scalar score, not the full path ranking. Decimal display columns
 are rounded to six places; the integer columns are authoritative. The TSV
 path must differ from PAF input/output paths. PAF filenames, basic fields,
 `xi` provenance and clipped `cs` representation keep their existing format.

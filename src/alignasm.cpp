@@ -66,18 +66,22 @@ int32_t run_alignasm(int argc, char** argv) {
             .implicit_value(true);
 
     program.add_argument("--scoring")
-            .help("Path scoring: quality (default) or legacy")
+            .help("Path scoring: quality (default), coverage, or legacy")
             .default_value(std::string("quality"));
     program.add_argument("--sv-cost")
-            .help("Quality mode: maximum reference connection cost (positive integer)")
+            .help("Quality/coverage modes: maximum reference connection cost (positive integer)")
             .default_value(int64_t{2000})
             .scan<'d', int64_t>();
     program.add_argument("--mapq-loss-per-kb")
-            .help("Quality mode: penalty for losing MAPQ 60 over 1 kb (nonnegative integer)")
+            .help("Quality/coverage modes: penalty for losing MAPQ 60 over 1 kb (nonnegative integer)")
             .default_value(int64_t{10})
             .scan<'d', int64_t>();
+    program.add_argument("--coverage-mapq")
+            .help("Coverage mode: minimum MAPQ for query coverage priority (1-60)")
+            .default_value(int64_t{20})
+            .scan<'d', int64_t>();
     program.add_argument("--score-report")
-            .help("Quality mode: write per-path score components to this TSV")
+            .help("Quality/coverage modes: write per-path score components to this TSV")
             .nargs(1);
 
     try {
@@ -98,15 +102,19 @@ int32_t run_alignasm(int argc, char** argv) {
     NON_SKIP_LINKABLE = program.get<bool>("--non_skip_linkable");
     const bool write_all = program.get<bool>("--write-all");
     const auto scoring_name = program.get<std::string>("--scoring");
-    if (scoring_name != "quality" && scoring_name != "legacy")
-        throw std::invalid_argument("--scoring must be quality or legacy");
+    if (scoring_name != "quality" && scoring_name != "coverage" && scoring_name != "legacy")
+        throw std::invalid_argument("--scoring must be quality, coverage, or legacy");
     const ScoringConfig scoring_config{
-        scoring_name == "quality" ? ScoringMode::QUALITY : ScoringMode::LEGACY,
-        program.get<int64_t>("--sv-cost"), program.get<int64_t>("--mapq-loss-per-kb")};
+        scoring_name == "coverage" ? ScoringMode::COVERAGE :
+            scoring_name == "quality" ? ScoringMode::QUALITY : ScoringMode::LEGACY,
+        program.get<int64_t>("--sv-cost"), program.get<int64_t>("--mapq-loss-per-kb"),
+        program.get<int64_t>("--coverage-mapq")};
     scoring_config.validate();
+    if (program.is_used("--coverage-mapq") && scoring_config.mode != ScoringMode::COVERAGE)
+        throw std::invalid_argument("--coverage-mapq requires --scoring coverage");
     if (scoring_config.mode == ScoringMode::LEGACY &&
         (program.is_used("--sv-cost") || program.is_used("--mapq-loss-per-kb") || program.is_used("--score-report")))
-        throw std::invalid_argument("--sv-cost, --mapq-loss-per-kb and --score-report require --scoring quality");
+        throw std::invalid_argument("--sv-cost, --mapq-loss-per-kb and --score-report require --scoring quality or coverage");
     std::filesystem::path score_report_path;
     if (program.is_used("--score-report")) {
         score_report_path = program.get<std::string>("--score-report");
@@ -393,7 +401,7 @@ int32_t run_alignasm(int argc, char** argv) {
     std::vector<std::vector<PafOutputData>> paf_out_data(paf_data.size()), paf_alt_out_data(paf_data.size());
     std::vector<std::vector<std::vector<PafOutputData>> > paf_max_out_datas(paf_data.size());
     std::vector<QualityReport> quality_reports;
-    if (scoring_config.mode == ScoringMode::QUALITY && (write_all || !score_report_path.empty()))
+    if (scoring_config.mode != ScoringMode::LEGACY && (write_all || !score_report_path.empty()))
         quality_reports.resize(paf_data.size());
     auto solve_one = [&](size_t index) {
         try {
@@ -564,7 +572,8 @@ int32_t run_alignasm(int argc, char** argv) {
             "query", "path_kind", "path_number", "scoring", "sv_cost_limit", "mapq_loss_per_kb",
             "total_scaled", "score_scale", "total_cost", "sv_cost", "query_cost", "mapq_deficit",
             "mapq_loss_scaled", "mapq_loss_cost", "unmapped_query_bp", "non_collinear_joins",
-            "pieces", "paths_examined", "enumeration_limit_reached"};
+            "pieces", "paths_examined", "enumeration_limit_reached",
+            "coverage_mapq", "confident_coverage_loss_bp"};
         auto display_cost = [](int64_t scaled) {
             std::ostringstream value;
             value << std::fixed << std::setprecision(6)
@@ -576,13 +585,15 @@ int32_t run_alignasm(int argc, char** argv) {
             for (const auto& path : report.paths) {
                 const auto& score = path.score;
                 writer << std::vector<std::string>{
-                    ctg_name_vector[index], path.kind, std::to_string(path.path_number), "quality",
+                    ctg_name_vector[index], path.kind, std::to_string(path.path_number), scoring_name,
                     std::to_string(scoring_config.sv_cost), std::to_string(scoring_config.mapq_loss_per_kb),
                     std::to_string(score.total_scaled), std::to_string(QUALITY_SCORE_SCALE), display_cost(score.total_scaled),
                     std::to_string(score.sv_cost), std::to_string(score.query_cost), std::to_string(score.mapq_deficit),
                     std::to_string(score.mapq_loss_scaled), display_cost(score.mapq_loss_scaled),
                     std::to_string(score.unmapped_bp), std::to_string(score.anom), std::to_string(score.pieces),
-                    std::to_string(report.paths_examined), report.limit_reached ? "1" : "0"};
+                    std::to_string(report.paths_examined), report.limit_reached ? "1" : "0",
+                    scoring_config.mode == ScoringMode::COVERAGE ? std::to_string(scoring_config.coverage_mapq) : ".",
+                    scoring_config.mode == ScoringMode::COVERAGE ? std::to_string(score.confident_coverage_loss_bp) : "."};
             }
         }
         output.flush();

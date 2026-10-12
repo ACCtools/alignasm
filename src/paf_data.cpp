@@ -245,7 +245,7 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original,
         return;
     }
 
-    if (scoring_config.mode == ScoringMode::QUALITY) {
+    if (scoring_config.mode != ScoringMode::LEGACY) {
         std::sort(paf_ctg_data_sorted.begin(), paf_ctg_data_sorted.end(), [](const auto& left, const auto& right) {
             return std::tie(left.qry_str, left.qry_end, left.ctg_index) <
                    std::tie(right.qry_str, right.qry_end, right.ctg_index);
@@ -284,7 +284,7 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original,
         int64_t left_block, right_block;
     };
     std::vector<std::vector<std::vector<QualityCut>>> quality_cut_options;
-    if (scoring_config.mode == ScoringMode::QUALITY) {
+    if (scoring_config.mode != ScoringMode::LEGACY) {
         quality_cut_options.resize(paf_data_n,
             std::vector<std::vector<QualityCut>>(paf_data_n));
         const auto length = paf_ctg_data_sorted.front().qry_total_length;
@@ -574,7 +574,7 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original,
         if (not rht.is_one) {
             // (ij/jj) -> (jk)
             if (lft.cur_idx != rht.pre_idx) return false;
-            if (scoring_config.mode == ScoringMode::QUALITY) {
+            if (scoring_config.mode != ScoringMode::LEGACY) {
                 int64_t earliest_start = paf_ctg_data_sorted[lft.cur_idx].qry_str;
                 if (!lft.is_one) {
                     earliest_start = std::numeric_limits<int64_t>::max();
@@ -602,7 +602,7 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original,
         assert(linkable(lft, rht));
         // Quality mode shares this topology but assigns its own additive weights
         // once all clipping states are known.
-        if (scoring_config.mode == ScoringMode::QUALITY) return PafDistance(calc_sum_);
+        if (scoring_config.mode != ScoringMode::LEGACY) return PafDistance(calc_sum_);
         auto ref_abs = [](auto x){
             if(x < 0){
                 return -x * REF_NEGATIVE_PENALTY;
@@ -858,7 +858,7 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original,
     Graph<PafDistance> graph;
     make_Graph(graph, vtx_n, src, dest);
 
-    if (scoring_config.mode == ScoringMode::QUALITY) {
+    if (scoring_config.mode != ScoringMode::LEGACY) {
         std::vector<QualityInterval> intervals;
         const auto query_length = paf_ctg_data_sorted.front().qry_total_length;
         for (const auto& read : paf_ctg_data_sorted) {
@@ -987,6 +987,11 @@ void solve_ctg_read(std::vector<PafReadData> &paf_ctg_data_original,
             }
             int64_t alternative = -1, best_up = 0, best_down = 1;
             for (int64_t rank = 1; rank < static_cast<int64_t>(distances.size()); ++rank) {
+                // A cheaper scalar score can rank later in coverage mode.
+                // Auxiliary simplifications must preserve the primary optimum's
+                // confident coverage before comparing cost per removed join.
+                if (distances[rank].confident_coverage_loss_bp != distances[0].confident_coverage_loss_bp)
+                    continue;
                 if (distances[rank].anom >= distances[0].anom) continue;
                 const auto up = checked_score_integer(static_cast<__int128>(distances[rank].total_scaled) - distances[0].total_scaled);
                 const auto down = distances[0].anom - distances[rank].anom;

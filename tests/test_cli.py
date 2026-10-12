@@ -252,6 +252,84 @@ class AlignasmCLI(unittest.TestCase):
         self.assertEqual(scores["selected"]["total_scaled"], scores["alternative"]["total_scaled"])
         self.assertEqual(scores["alternative"]["non_collinear_joins"], "0")
 
+    def test_coverage_preserves_short_internal_high_mapq_pieces(self):
+        # One-base overlaps form a connected component in which skipping the
+        # middle alignment is legal. The scalar optimum prefers one less join.
+        for length in [51, 301, 801, 1954]:
+            with self.subTest(length=length):
+                total = 6000 + length
+                source = (row("short", total, 0, 3001, "chr1", 10000, 60)
+                          + row("short", total, 3000, 3000+length, "chr2", 20000, 60)
+                          + row("short", total, 2999+length, total, "chr3", 30000, 60))
+                baseline, _ = self.run_case(f"short_quality_{length}", source)
+                protected, _ = self.run_case(f"short_coverage_{length}", source,
+                                             ["--scoring", "coverage", "--write-all"])
+                self.assertNotIn("chr2", [r[5] for r in self.paf(baseline)])
+                self.assertEqual([r[5] for r in self.paf(protected)], ["chr1", "chr2", "chr3"])
+                score = self.scores(protected)[0]
+                self.assertEqual(self.scores(baseline)[0]["confident_coverage_loss_bp"], ".")
+                self.assertEqual(score["scoring"], "coverage")
+                self.assertEqual(score["coverage_mapq"], "20")
+                self.assertEqual(score["confident_coverage_loss_bp"], "0")
+                self.assertEqual(score["unmapped_query_bp"], "0")
+                # Enumeration must tolerate later paths with *smaller* scalar
+                # costs, and may not export them as equally covered alternatives.
+                self.assertEqual(self.paf(protected, "aln.alt.paf"), [])
+                fast, _ = self.run_case(f"short_fast_{length}", source, ["--scoring", "coverage"])
+                self.assertEqual(self.paf(protected), self.paf(fast))
+
+    def test_coverage_does_not_force_low_mapq_or_missing_segments(self):
+        flanks = (row("weak", 6801, 0, 3001, "chr1", 10000, 60)
+                  + row("weak", 6801, 3800, 6801, "chr3", 30000, 60))
+        for mapq in [None, 0, 19, 255]:
+            with self.subTest(mapq=mapq):
+                source = flanks
+                if mapq is not None:
+                    source += row("weak", 6801, 3000, 3801, "chr2", 20000, mapq)
+                directory, _ = self.run_case(f"weak_{mapq}", source, ["--scoring", "coverage"])
+                self.assertEqual([r[5] for r in self.paf(directory)], ["chr1", "chr3"])
+                self.assertEqual(self.scores(directory)[0]["confident_coverage_loss_bp"], "0")
+        source = flanks + row("weak", 6801, 3000, 3801, "chr2", 20000, 20)
+        boundary, _ = self.run_case("boundary", source, ["--scoring", "coverage"])
+        stricter, _ = self.run_case("stricter", source, ["--scoring", "coverage", "--coverage-mapq", "21"])
+        self.assertEqual([r[5] for r in self.paf(boundary)], ["chr1", "chr2", "chr3"])
+        self.assertEqual([r[5] for r in self.paf(stricter)], ["chr1", "chr3"])
+
+    def test_coverage_allows_a_continuous_confident_alternative(self):
+        source = (row("alternative", 6801, 0, 3001, "chr1", 10000, 60)
+                  + row("alternative", 6801, 3000, 3801, "chr2", 20000, 60)
+                  + row("alternative", 6801, 3800, 6801, "chr3", 30000, 60)
+                  + row("alternative", 6801, 0, 6801, "chr4", 40000, 60))
+        directory, _ = self.run_case("continuous", source, ["--scoring", "coverage", "--write-all"])
+        self.assertEqual([r[5] for r in self.paf(directory)], ["chr4"])
+        self.assertEqual(self.scores(directory)[0]["confident_coverage_loss_bp"], "0")
+        self.assertEqual(self.scores(directory)[0]["non_collinear_joins"], "0")
+
+    def test_coverage_short_piece_is_reverse_complement_invariant(self):
+        source = (row("reverse", 6801, 0, 3001, "chr1", 10000, 60)
+                  + row("reverse", 6801, 3000, 3801, "chr2", 20000, 60)
+                  + row("reverse", 6801, 3800, 6801, "chr3", 30000, 60))
+        reversed_rows = []
+        for line in source.splitlines():
+            fields = line.split("\t")
+            fields[2], fields[3] = str(6801-int(fields[3])), str(6801-int(fields[2]))
+            fields[4] = "-"
+            reversed_rows.append("\t".join(fields) + "\n")
+        forward, _ = self.run_case("cov_forward", source, ["--scoring", "coverage"])
+        reverse, _ = self.run_case("cov_reverse", "".join(reversed_rows), ["--scoring", "coverage"])
+        def geometry(rows, reverse_query=False):
+            result = []
+            for r in rows:
+                start, end, strand = int(r[2]), int(r[3]), r[4]
+                if reverse_query:
+                    start, end = 6801-end, 6801-start
+                    strand = "+" if strand == "-" else "-"
+                result.append((start, end, strand, r[5], int(r[7]), int(r[8])))
+            return sorted(result)
+        self.assertEqual(geometry(self.paf(forward)), geometry(self.paf(reverse), True))
+        for field in ["confident_coverage_loss_bp", "total_scaled", "unmapped_query_bp", "non_collinear_joins"]:
+            self.assertEqual(self.scores(forward)[0][field], self.scores(reverse)[0][field], field)
+
     def test_invalid_options_and_overflow_fail_clearly(self):
         single = row("invalid", 100, 0, 100, "chr1", 0, 60)
         for index, options in enumerate([
@@ -259,6 +337,10 @@ class AlignasmCLI(unittest.TestCase):
             ["--mapq-loss-per-kb", "-1"], ["--mapq-loss-per-kb", "0.5"],
             ["--scoring", "legacy", "--sv-cost", "2000"],
             ["--scoring", "legacy", "--mapq-loss-per-kb", "10"],
+            ["--coverage-mapq", "20"], ["--scoring", "legacy", "--coverage-mapq", "20"],
+            ["--scoring", "coverage", "--coverage-mapq", "0"],
+            ["--scoring", "coverage", "--coverage-mapq", "61"],
+            ["--scoring", "coverage", "--coverage-mapq", "20.5"],
         ]):
             self.run_case("invalid" + str(index), single, options, report=False, success=False)
         self.run_case("legacy_report", single, ["--scoring", "legacy"], success=False)

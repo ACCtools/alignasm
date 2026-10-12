@@ -9,6 +9,8 @@ void ScoringConfig::validate() const {
     if (sv_cost <= 0) throw std::invalid_argument("--sv-cost must be positive");
     if (mapq_loss_per_kb < 0)
         throw std::invalid_argument("--mapq-loss-per-kb must be nonnegative");
+    if (coverage_mapq < 1 || coverage_mapq > 60)
+        throw std::invalid_argument("--coverage-mapq must be between 1 and 60");
 }
 
 int64_t checked_score_integer(__int128 value) {
@@ -93,7 +95,8 @@ bool QualityDistance::operator<(const QualityDistance& other) const {
 }
 
 namespace {
-constexpr std::array<int64_t QualityDistance::*, 8> components{
+constexpr std::array<int64_t QualityDistance::*, 9> components{
+    &QualityDistance::confident_coverage_loss_bp,
     &QualityDistance::total_scaled, &QualityDistance::mapq_loss_scaled,
     &QualityDistance::unmapped_bp, &QualityDistance::anom, &QualityDistance::pieces,
     &QualityDistance::query_cost, &QualityDistance::sv_cost, &QualityDistance::mapq_deficit
@@ -129,6 +132,22 @@ QualityScorer::QualityScorer(const ScoringConfig& config, int64_t query_length,
                            const std::vector<QualityInterval>& intervals)
     : config_(config), envelope_(query_length, intervals) {
     config_.validate();
+    if (config_.mode == ScoringMode::COVERAGE) {
+        std::vector<QualityInterval> confident;
+        for (const auto& interval : intervals) {
+            if (effective_mapq(interval.mapq) >= config_.coverage_mapq)
+                confident.push_back({interval.start, interval.end, 1});
+        }
+        // A binary union: duplicated/overlapping alignments do not multiply
+        // evidence, and any qualifying alternative may cover the same bases.
+        confident_envelope_.emplace(query_length, confident);
+    }
+}
+
+int64_t QualityScorer::confident_loss(int64_t start, int64_t end, uint8_t mapq) const {
+    if (!confident_envelope_) return 0;
+    return confident_envelope_->loss(start, end,
+        effective_mapq(mapq) >= config_.coverage_mapq ? 1 : 0);
 }
 
 void QualityScorer::validate_segment(const QualitySegment& segment) const {
@@ -154,8 +173,10 @@ std::pair<int64_t, int64_t> QualityScorer::junction(
 }
 
 QualityDistance QualityScorer::distance(int64_t query_cost, int64_t sv_cost, int64_t deficit,
-                                       int64_t unmapped, int64_t joins, int64_t pieces) const {
+                                       int64_t unmapped, int64_t joins, int64_t pieces,
+                                       int64_t confident_loss) const {
     QualityDistance score;
+    score.confident_coverage_loss_bp = confident_loss;
     score.query_cost = query_cost;
     score.sv_cost = sv_cost;
     score.mapq_deficit = deficit;
@@ -172,7 +193,8 @@ QualityDistance QualityScorer::distance(int64_t query_cost, int64_t sv_cost, int
 QualityDistance QualityScorer::start(int64_t first_query_start) const {
     const auto deficit = envelope_.loss(0, first_query_start);
     return distance(checked_score_integer(static_cast<__int128>(first_query_start) * 2),
-                    0, deficit, first_query_start, 0, 0);
+                    0, deficit, first_query_start, 0, 0,
+                    confident_loss(0, first_query_start));
 }
 
 QualityDistance QualityScorer::transition(const QualitySegment& left,
@@ -184,7 +206,10 @@ QualityDistance QualityScorer::transition(const QualitySegment& left,
     const auto deficit = checked_score_integer(
         static_cast<__int128>(envelope_.loss(left.query_start, left.query_end, left.mapq)) +
         envelope_.loss(left.query_end, right.query_start));
-    return distance(gap, sv_cost, deficit, gap, joins, 1);
+    const auto lost = checked_score_integer(
+        static_cast<__int128>(confident_loss(left.query_start, left.query_end, left.mapq)) +
+        confident_loss(left.query_end, right.query_start));
+    return distance(gap, sv_cost, deficit, gap, joins, 1, lost);
 }
 
 QualityDistance QualityScorer::finish(const QualitySegment& last) const {
@@ -193,19 +218,25 @@ QualityDistance QualityScorer::finish(const QualitySegment& last) const {
     const auto deficit = checked_score_integer(
         static_cast<__int128>(envelope_.loss(last.query_start, last.query_end, last.mapq)) +
         envelope_.loss(last.query_end, envelope_.query_length()));
+    const auto lost = checked_score_integer(
+        static_cast<__int128>(confident_loss(last.query_start, last.query_end, last.mapq)) +
+        confident_loss(last.query_end, envelope_.query_length()));
     return distance(checked_score_integer(static_cast<__int128>(suffix) * 2),
-                    0, deficit, suffix, 0, 1);
+                    0, deficit, suffix, 0, 1, lost);
 }
 
 QualityDistance QualityScorer::evaluate(const std::vector<QualitySegment>& path) const {
     if (path.empty()) throw std::logic_error("cannot score an empty alignment path");
     __int128 covered = 0, retained_quality = 0, reference_cost = 0, joins = 0;
+    __int128 confident_covered = 0;
     for (size_t index = 0; index < path.size(); ++index) {
         const auto& segment = path[index];
         validate_segment(segment);
         const auto length = segment.query_end - segment.query_start;
         covered += length;
         retained_quality += static_cast<__int128>(length) * effective_mapq(segment.mapq);
+        if (effective_mapq(segment.mapq) >= config_.coverage_mapq)
+            confident_covered += length;
         if (index) {
             const auto [cost, count] = junction(path[index - 1], segment);
             reference_cost += cost;
@@ -218,6 +249,11 @@ QualityDistance QualityScorer::evaluate(const std::vector<QualitySegment>& path)
     // Unmapped bases count once internally and twice at the two ends.
     const auto query_cost = checked_score_integer(static_cast<__int128>(unmapped) +
         path.front().query_start + envelope_.query_length() - path.back().query_end);
+    const auto lost = confident_envelope_
+        ? checked_score_integer(static_cast<__int128>(confident_envelope_->integral(envelope_.query_length())) -
+                                confident_covered)
+        : 0;
+    if (lost < 0) throw std::logic_error("invalid recovered confident coverage");
     return distance(query_cost, checked_score_integer(reference_cost), deficit, unmapped,
-                    checked_score_integer(joins), checked_score_integer(path.size()));
+                    checked_score_integer(joins), checked_score_integer(path.size()), lost);
 }

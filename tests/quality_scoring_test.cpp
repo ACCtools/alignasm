@@ -129,6 +129,70 @@ void test_junctions_and_symmetry() {
     }
 }
 
+void test_confident_coverage_priority() {
+    const std::vector<QualityInterval> candidates{
+        {0, 2000, 60}, {2000, 2801, 60}, {2801, 4801, 60}};
+    const auto left = piece(0, 2000, 1000, 60, 0);
+    const auto middle = piece(2000, 2801, 5000, 60, 1);
+    const auto right = piece(2801, 4801, 9000, 60, 2);
+    const std::vector<QualitySegment> complete{left, middle, right};
+    const std::vector<QualitySegment> skipped{left, right};
+    QualityScorer old({}, 4801, candidates);
+    QualityScorer coverage({ScoringMode::COVERAGE, 2000, 10}, 4801, candidates);
+    require(old.evaluate(skipped) < old.evaluate(complete), "scalar tradeoff reproduces the short-piece loss");
+    const auto good = coverage.evaluate(complete), bad = coverage.evaluate(skipped);
+    require(good.total_scaled > bad.total_scaled && good < bad,
+            "confident coverage must precede scalar SV simplification");
+    require(good.confident_coverage_loss_bp == 0 && bad.confident_coverage_loss_bp == 801,
+            "covered and omitted bases must be counted exactly");
+    for (const auto& path : {complete, skipped}) {
+        auto edge_score = coverage.start(path.front().query_start);
+        for (size_t i = 1; i < path.size(); ++i)
+            edge_score = edge_score + coverage.transition(path[i-1], path[i]);
+        edge_score = edge_score + coverage.finish(path.back());
+        require(edge_score.same_components(coverage.evaluate(path)), "coverage edge/path agreement");
+    }
+
+    // A high-MAPQ fragment is evidence for covering query bases, not a
+    // mandatory locus or a vote per PAF record. A continuous alternative can win.
+    auto redundant = candidates;
+    redundant.push_back(candidates[1]);
+    redundant.push_back({0, 4801, 60});
+    QualityScorer alternative({ScoringMode::COVERAGE, 2000, 10}, 4801, redundant);
+    require(alternative.evaluate(skipped).confident_coverage_loss_bp == 801,
+            "overlapping and duplicate inputs must not multiply coverage");
+    require(alternative.evaluate({piece(0, 4801, 12000, 60, 3)}) < alternative.evaluate(complete),
+            "equally confident continuous coverage must beat unnecessary SVs");
+    const auto split = alternative.evaluate({left, piece(2000, 2400, 5000, 60, 1),
+                                           piece(2400, 2801, 5400, 60, 1), right});
+    require(split.confident_coverage_loss_bp == 0 && split.total_scaled == good.total_scaled,
+            "splitting an alignment must not create coverage rewards");
+
+    for (const uint8_t mapq : {0, 19, 20, 60, 255}) {
+        auto inputs = candidates;
+        inputs[1].mapq = mapq;
+        auto observed = complete;
+        observed[1].mapq = mapq;
+        QualityScorer threshold({ScoringMode::COVERAGE, 2000, 10}, 4801, inputs);
+        const bool confident = mapq == 20 || mapq == 60;
+        require((threshold.evaluate(observed) < threshold.evaluate(skipped)) == confident,
+                "low or missing MAPQ must not acquire coverage protection");
+    }
+
+    QualityScorer stricter({ScoringMode::COVERAGE, 2000, 10, 60}, 100,
+                          {{0, 100, 20}, {0, 100, 60}});
+    require(stricter.evaluate({piece(0, 100, 500, 20)}).confident_coverage_loss_bp == 100,
+            "low-quality replacement is not confident coverage");
+    QualityScorer termini({ScoringMode::COVERAGE, 2000, 10}, 200, {{30, 170, 60}});
+    require(termini.evaluate({piece(30, 170, 500)}).confident_coverage_loss_bp == 0,
+            "genuinely uncovered query ends must not manufacture evidence");
+    const auto clipped = piece(60, 140, 530);
+    require(termini.evaluate({clipped}).confident_coverage_loss_bp == 60,
+            "clipped confident bases count once at both ends");
+    require((termini.start(60) + termini.finish(clipped)).same_components(termini.evaluate({clipped})),
+            "terminal coverage accounting agrees with the independent evaluator");
+}
+
 void test_checked_arithmetic() {
     const auto maximum = std::numeric_limits<int64_t>::max();
     throws<std::overflow_error>([&] { MapqEnvelope envelope(maximum, {{0, maximum, 60}}); }, "envelope overflow");
@@ -159,6 +223,7 @@ void test_exhaustive_dag_oracle() {
                 if (to != from + 1 && random() % 3) continue;
                 QualityDistance weight;
                 weight.query_cost = random() % 3;
+                weight.confident_coverage_loss_bp = trial % 3 == 0 ? random() % 3 : 0;
                 weight.sv_cost = random() % 3;
                 weight.mapq_deficit = random() % 5;
                 weight.mapq_loss_scaled = (trial % 2 ? 10 : 0) * weight.mapq_deficit;
@@ -206,6 +271,7 @@ int main() {
         test_real_coordinates_and_omission();
         test_clipping_splitting_and_zero_weight();
         test_junctions_and_symmetry();
+        test_confident_coverage_priority();
         test_checked_arithmetic();
         test_exhaustive_dag_oracle();
         std::cout << "quality scoring and exhaustive DAG checks passed\n";
